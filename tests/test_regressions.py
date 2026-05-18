@@ -87,6 +87,56 @@ class RegressionTestCase(unittest.TestCase):
             LinkValidator.identify_platform("https://evil.example/watch?next=douyin.com/video/123")
         )
 
+    def test_searcher_decodes_wrapped_urls_and_requires_real_content_hosts(self):
+        install_pyqt_core_stub()
+        from core.searcher import (
+            _guess_platform_from_url,
+            _is_platform_content_url,
+            _normalize_result_url,
+        )
+
+        wrapped = (
+            "https://www.bing.com/ck/a?!&&u="
+            "a1aHR0cHM6Ly93d3cuZG91eWluLmNvbS92aWRlby8xMjM0NTY"
+            "&ntb=1"
+        )
+        self.assertEqual(
+            _normalize_result_url(wrapped),
+            "https://www.douyin.com/video/123456",
+        )
+        self.assertEqual(_guess_platform_from_url(wrapped), ("douyin", "抖音"))
+        self.assertTrue(_is_platform_content_url(wrapped, "douyin"))
+        self.assertFalse(
+            _is_platform_content_url("https://evil.example/path?u=instagram.com/p/123", "instagram")
+        )
+        self.assertFalse(
+            _is_platform_content_url("https://www.instagram.com/accounts/login/", "instagram")
+        )
+        self.assertFalse(
+            _is_platform_content_url("https://www.instagram.com/p/signin/", "instagram")
+        )
+
+    def test_link_parser_supports_search_result_url_shapes(self):
+        self.assertEqual(
+            LinkValidator.extract_content_id(
+                "https://www.xiaohongshu.com/discovery/item/6233548400000000010259a5",
+                "xiaohongshu",
+            ),
+            "6233548400000000010259a5",
+        )
+        self.assertEqual(
+            LinkValidator.extract_content_id("https://www.facebook.com/watch/?v=123456789", "facebook"),
+            "123456789",
+        )
+
+    def test_all_content_type_defaults_include_all_social_platforms(self):
+        from ui.widgets.search_input import CONTENT_TYPE_PLATFORMS
+
+        self.assertEqual(
+            CONTENT_TYPE_PLATFORMS["all"],
+            ("douyin", "bilibili", "xiaohongshu", "youtube", "instagram", "facebook"),
+        )
+
     def test_export_respects_selected_and_default_fields(self):
         self.db.insert_lead(LeadInfo(
             user_id="u1",

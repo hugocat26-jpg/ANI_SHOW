@@ -32,8 +32,8 @@ PLATFORM_OPTIONS = [
 
 # 内容类型 → 默认平台映射
 CONTENT_TYPE_PLATFORMS = {
-    "all": ("douyin", "bilibili", "xiaohongshu", "youtube"),
-    "video": ("douyin", "bilibili", "youtube"),
+    "all": ("douyin", "bilibili", "xiaohongshu", "youtube", "instagram", "facebook"),
+    "video": ("douyin", "bilibili", "youtube", "instagram", "facebook"),
     "image_text": ("xiaohongshu", "instagram", "facebook"),
 }
 
@@ -44,6 +44,7 @@ class SearchInputWidget(QGroupBox):
     search_requested = pyqtSignal(str, list, str)   # keyword, platforms, content_type
     search_company = pyqtSignal(str)                 # company name
     add_urls = pyqtSignal(list)                      # 批量添加链接到链接输入区
+    platform_login_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("● 搜索发现", parent)
@@ -78,6 +79,23 @@ class SearchInputWidget(QGroupBox):
         """)
         self._mode_toggle.clicked.connect(self._toggle_mode)
         mode_layout.addWidget(self._mode_toggle)
+
+        self._login_btn = QPushButton("平台登录")
+        self._login_btn.setFixedWidth(88)
+        self._login_btn.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {_CARD_BORDER};
+                border-radius: 8px;
+                padding: 0 10px;
+                background-color: transparent;
+                color: {_BODY};
+                min-height: 28px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{ border-color: {_GOLD}; color: {_GOLD}; }}
+        """)
+        self._login_btn.clicked.connect(self.platform_login_requested.emit)
+        mode_layout.addWidget(self._login_btn)
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
 
@@ -166,7 +184,7 @@ class SearchInputWidget(QGroupBox):
         self._platform_checkboxes: dict[str, QCheckBox] = {}
         for key, name in PLATFORM_OPTIONS:
             cb = QCheckBox(name)
-            cb.setChecked(key in ("douyin", "bilibili", "xiaohongshu", "youtube"))
+            cb.setChecked(key in CONTENT_TYPE_PLATFORMS["all"])
             cb.setStyleSheet(f"""
                 QCheckBox {{ color: {_BODY}; font-size: 11px; spacing: 4px; }}
                 QCheckBox::indicator {{

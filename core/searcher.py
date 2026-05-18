@@ -14,8 +14,11 @@ import random
 import threading
 import tempfile
 import shutil
+import base64
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -24,6 +27,14 @@ from utils.logger import Logger
 
 # 浏览器初始化锁
 _search_browser_lock = threading.Lock()
+_SEARCH_PROFILE_DIR = Path.home() / ".client_lead_miner" / "search_profile"
+_PLATFORM_LOGIN_URLS = {
+    "douyin": "https://www.douyin.com/",
+    "xiaohongshu": "https://www.xiaohongshu.com/explore",
+    "instagram": "https://www.instagram.com/",
+    "facebook": "https://zh-cn.facebook.com/",
+}
+LOGIN_REQUIRED_PLATFORMS = {"douyin", "xiaohongshu", "instagram", "facebook"}
 
 # ==================== 反检测脚本（与 BaseScraper 一致）====================
 
@@ -135,6 +146,70 @@ class SearchWorker(QThread):
         self._stop_event.set()
 
 
+class PlatformLoginWorker(QThread):
+    """平台登录线程：打开可见浏览器，用户登录后关闭窗口保存状态。"""
+
+    login_finished = pyqtSignal(str, bool, str)
+    log = pyqtSignal(str, str)
+
+    def __init__(self, platform: str):
+        super().__init__()
+        self.platform = platform
+
+    def run(self) -> None:
+        try:
+            label = _platform_label(self.platform)
+            self.log.emit("INFO", f"正在打开 {label} 登录窗口，请登录后关闭浏览器")
+            login_search_platform(self.platform)
+            self.login_finished.emit(self.platform, True, f"{label} 登录状态已保存")
+        except Exception as e:
+            self.login_finished.emit(self.platform, False, str(e))
+
+
+def login_search_platform(platform: str, timeout_ms: int = 600000) -> None:
+    """打开持久化搜索 Profile 让用户登录平台。"""
+    from playwright.sync_api import sync_playwright
+
+    if platform not in _PLATFORM_LOGIN_URLS:
+        raise ValueError(f"不支持的平台登录: {platform}")
+
+    _SEARCH_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    pw = sync_playwright().start()
+    context = None
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(_SEARCH_PROFILE_DIR),
+            headless=False,
+            channel="msedge",
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            viewport={"width": 1280, "height": 900},
+            locale="zh-CN",
+        )
+        context.add_init_script(_ANTI_DETECT_SCRIPT)
+        page = context.new_page()
+        page.goto(_PLATFORM_LOGIN_URLS[platform], wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.wait_for_event("close", timeout=timeout_ms)
+        except Exception:
+            pass
+    finally:
+        try:
+            if context:
+                context.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
+
+
+def has_search_login_state() -> bool:
+    return (_SEARCH_PROFILE_DIR / "Default" / "Preferences").exists() or (
+        _SEARCH_PROFILE_DIR / "Default" / "Cookies"
+    ).exists()
+
+
 class PlatformSearcher:
     """各平台搜索器 — 每平台接收一个独立 page（共享 context），隔离页面崩溃"""
 
@@ -180,6 +255,31 @@ class PlatformSearcher:
             return len(text.strip()) > 50
         except Exception:
             return False
+
+    def _element_tag_name(self, element) -> str:
+        """兼容 Playwright ElementHandle：获取节点 tagName。"""
+        try:
+            return (element.evaluate("el => el.tagName") or "").lower()
+        except Exception:
+            return ""
+
+    def _make_result(self, url: str, title: str, platform_name: str = "") -> Optional[SearchResult]:
+        normalized = _normalize_result_url(url)
+        if not normalized:
+            return None
+
+        platform, guessed_name = _guess_platform_from_url(normalized)
+        if platform == "web":
+            return None
+
+        return SearchResult(
+            url=normalized,
+            title=(title or normalized)[:100],
+            platform=platform,
+            platform_name=platform_name or guessed_name,
+            content_type=_content_type_for_platform(platform),
+            snippet=(title or "")[:120],
+        )
 
     # ==================== 抖音搜索 ====================
 
@@ -410,18 +510,119 @@ class PlatformSearcher:
     def search_instagram(self, keyword: str, max_results: int = 20) -> list[SearchResult]:
         self._new_page()
         try:
+            results = self._search_instagram_tags(keyword, max_results)
+            if results:
+                return results
             return self._search_bing_site(keyword, "instagram.com", "Instagram", max_results)
         finally:
             self._close_page()
+
+    def _search_instagram_tags(self, keyword: str, max_results: int = 20) -> list[SearchResult]:
+        """Instagram 公开 hashtag/popular 页面，比站内搜索页更少触发登录拦截。"""
+        results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        for tag in _instagram_tag_candidates(keyword):
+            if len(results) >= max_results:
+                break
+            try:
+                url = f"https://www.instagram.com/explore/tags/{quote(tag)}/"
+                self._navigate(url, wait_until="domcontentloaded", timeout=25000)
+                time.sleep(4)
+                links = self._page.eval_on_selector_all(
+                    "a[href]",
+                    """els => els.map(a => ({
+                        href: a.href || a.getAttribute('href') || '',
+                        text: a.innerText || a.getAttribute('aria-label') || ''
+                    }))""",
+                )
+                for item in links:
+                    if len(results) >= max_results:
+                        break
+                    href = _normalize_result_url(item.get("href") or "")
+                    if not href or href in seen_urls:
+                        continue
+                    if not _is_platform_content_url(href, "instagram"):
+                        continue
+                    seen_urls.add(href)
+                    title = (item.get("text") or keyword).strip()[:100]
+                    results.append(SearchResult(
+                        url=href,
+                        title=title or keyword,
+                        platform="instagram",
+                        platform_name="Instagram",
+                        content_type="video" if "/reel/" in href.lower() else "image_text",
+                        snippet=(title or keyword)[:120],
+                    ))
+            except Exception as e:
+                self.logger.warning(f"Instagram标签搜索失败: {str(e)[:80]}")
+
+        self.logger.info(f"Instagram标签搜索 '{keyword}': {len(results)} 条")
+        return results
 
     # ==================== Facebook ====================
 
     def search_facebook(self, keyword: str, max_results: int = 20) -> list[SearchResult]:
         self._new_page()
         try:
+            results = self._search_facebook_direct(keyword, max_results)
+            if results:
+                return results
             return self._search_bing_site(keyword, "facebook.com", "Facebook", max_results)
         finally:
             self._close_page()
+
+    def _search_facebook_direct(self, keyword: str, max_results: int = 20) -> list[SearchResult]:
+        """Facebook 公开视频搜索页，无需登录时也能暴露部分 reel/video 链接。"""
+        results: list[SearchResult] = []
+        try:
+            for search_keyword in [keyword] + _keyword_english_fallbacks(keyword):
+                if len(results) >= max_results:
+                    break
+                search_url = f"https://zh-cn.facebook.com/search/videos/?q={quote(search_keyword)}"
+                self._navigate(search_url, wait_until="domcontentloaded", timeout=25000)
+                time.sleep(4)
+
+                for _ in range(3):
+                    try:
+                        self._page.evaluate("window.scrollBy(0, 700)")
+                    except Exception:
+                        break
+                    time.sleep(1.2)
+
+                seen_urls: set[str] = {r.url for r in results}
+                links = self._page.eval_on_selector_all(
+                    "a[href]",
+                    """els => els.map(a => ({
+                        href: a.href || a.getAttribute('href') || '',
+                        text: a.innerText || a.getAttribute('aria-label') || ''
+                    }))""",
+                )
+                for item in links:
+                    if len(results) >= max_results:
+                        break
+                    try:
+                        href = _normalize_result_url(item.get("href") or "")
+                        if not href or href in seen_urls:
+                            continue
+                        if not _is_platform_content_url(href, "facebook"):
+                            continue
+                        seen_urls.add(href)
+                        title = (item.get("text") or search_keyword).strip()[:100]
+                        results.append(SearchResult(
+                            url=href,
+                            title=title or search_keyword,
+                            platform="facebook",
+                            platform_name="Facebook",
+                            content_type="video",
+                            snippet=(title or search_keyword)[:120],
+                        ))
+                    except Exception:
+                        continue
+        except Exception as e:
+            self.logger.warning(f"Facebook直搜失败: {str(e)[:80]}")
+
+        self.logger.info(f"Facebook直搜 '{keyword}': {len(results)} 条")
+        return results
 
     # ==================== 通用网页搜索 ====================
 
@@ -451,16 +652,17 @@ class PlatformSearcher:
                 if len(results) >= max_results:
                     break
                 try:
-                    if item.tag_name == 'a':
+                    if self._element_tag_name(item) == 'a':
                         link_el = item
                     else:
                         link_el = item.query_selector('a[data-testid="result-title-a"], h2 a, a[href]')
                     if not link_el:
                         continue
                     href = link_el.get_attribute("href") or ""
-                    if not href.startswith("http"):
+                    href = _normalize_result_url(href)
+                    if not href:
                         continue
-                    if any(d in href for d in ["duckduckgo.com", "localhost"]):
+                    if _is_search_engine_or_local_url(href):
                         continue
                     if href in seen_urls:
                         continue
@@ -472,7 +674,7 @@ class PlatformSearcher:
                     results.append(SearchResult(
                         url=href, title=title[:100],
                         platform=platform, platform_name=platform_name,
-                        content_type="video" if platform in ("douyin", "bilibili", "youtube") else "image_text",
+                        content_type=_content_type_for_platform(platform),
                         snippet=title[:120],
                     ))
                 except Exception:
@@ -499,13 +701,12 @@ class PlatformSearcher:
                 if len(results) >= max_results:
                     break
                 try:
-                    link_el = item if item.tag_name == 'a' else item.query_selector('h2 a, a[href]')
+                    link_el = item if self._element_tag_name(item) == 'a' else item.query_selector('h2 a, a[href]')
                     if not link_el:
                         continue
                     href = link_el.get_attribute("href") or ""
-                    if not href.startswith("http"):
-                        continue
-                    if any(d in href for d in ["bing.com", "microsoft.com", "localhost"]):
+                    href = _normalize_result_url(href)
+                    if not href or _is_search_engine_or_local_url(href):
                         continue
                     if href in seen_urls:
                         continue
@@ -517,7 +718,7 @@ class PlatformSearcher:
                     results.append(SearchResult(
                         url=href, title=title[:100],
                         platform=platform, platform_name=platform_name,
-                        content_type="video" if platform in ("douyin", "bilibili", "youtube") else "image_text",
+                        content_type=_content_type_for_platform(platform),
                         snippet=title[:120],
                     ))
                 except Exception:
@@ -531,52 +732,142 @@ class PlatformSearcher:
     def _search_bing_site(self, keyword: str, site: str, platform_name: str,
                           max_results: int = 20) -> list[SearchResult]:
         results: list[SearchResult] = []
+        platform = _platform_from_site(site)
+        queries = _platform_site_queries(keyword, platform, site, platform_name)
         try:
-            query = f"site:{site} {keyword}"
-            search_url = f"https://www.bing.com/search?q={quote(query)}&setlang=zh-cn"
-            self._navigate(search_url, wait_until="domcontentloaded", timeout=20000)
-            time.sleep(2)
-
-            items = self._page.query_selector_all('li.b_algo, ol#b_results > li')
-            if not items:
-                items = self._page.query_selector_all('h2 a[href]')
-
             seen_urls: set[str] = set()
-            for item in items:
+
+            rss_results = self._search_bing_rss_site(queries, platform, platform_name, max_results)
+            for result in rss_results:
+                if result.url not in seen_urls:
+                    seen_urls.add(result.url)
+                    results.append(result)
                 if len(results) >= max_results:
                     break
-                try:
-                    link_el = item if item.tag_name == 'a' else item.query_selector('h2 a, a[href]')
-                    if not link_el:
+
+            for query in queries:
+                if len(results) >= max_results:
+                    break
+
+                search_url = f"https://www.bing.com/search?q={quote(query)}&setlang=zh-cn"
+                self._navigate(search_url, wait_until="domcontentloaded", timeout=20000)
+                time.sleep(2)
+
+                items = self._page.query_selector_all('li.b_algo, ol#b_results > li')
+                if not items:
+                    items = self._page.query_selector_all('h2 a[href]')
+
+                for item in items:
+                    if len(results) >= max_results:
+                        break
+                    try:
+                        link_el = item if self._element_tag_name(item) == 'a' else item.query_selector('h2 a, a[href]')
+                        if not link_el:
+                            continue
+                        href = _normalize_result_url(link_el.get_attribute("href") or "")
+                        if not href or href in seen_urls:
+                            continue
+                        if not _is_platform_content_url(href, platform):
+                            continue
+                        seen_urls.add(href)
+
+                        title = link_el.inner_text().strip()
+                        result = self._make_result(href, title, platform_name)
+                        if result:
+                            results.append(result)
+                    except Exception:
                         continue
-                    href = link_el.get_attribute("href") or ""
-                    if not href.startswith("http"):
+
+            if not results:
+                results = self._search_duckduckgo_site(keyword, platform, site, platform_name, max_results)
+
+            self.logger.info(f"搜索引擎 site:{site} '{keyword}': {len(results)} 条")
+        except Exception as e:
+            self.logger.warning(f"搜索引擎 site失败: {str(e)[:80]}")
+        return results
+
+    def _search_bing_rss_site(self, queries: list[str], platform: str, platform_name: str,
+                              max_results: int = 20) -> list[SearchResult]:
+        results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        try:
+            import requests
+        except Exception:
+            return results
+
+        for query in queries:
+            if len(results) >= max_results:
+                break
+            try:
+                response = requests.get(
+                    "https://www.bing.com/search",
+                    params={"q": query, "format": "rss", "setlang": "zh-cn"},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=12,
+                )
+                if response.status_code != 200:
+                    continue
+
+                root = ET.fromstring(response.content)
+                for item in root.findall("./channel/item"):
+                    if len(results) >= max_results:
+                        break
+                    href = _normalize_result_url(item.findtext("link") or "")
+                    if not href or href in seen_urls:
                         continue
-                    if "bing.com" in href and "bing.com/ck/a" not in href:
-                        continue
-                    # 宽松域名匹配
-                    site_key = site.split(".")[0]
-                    if site_key not in href.lower():
-                        continue
-                    if href in seen_urls:
+                    if not _is_platform_content_url(href, platform):
                         continue
                     seen_urls.add(href)
 
-                    title = link_el.inner_text().strip()
-                    platform = _guess_platform_from_url(href)[0]
-
+                    title = item.findtext("title") or href
+                    snippet = item.findtext("description") or title
                     results.append(SearchResult(
-                        url=href, title=title[:100],
-                        platform=platform, platform_name=platform_name,
-                        content_type="video" if platform in ("douyin", "bilibili", "youtube") else "image_text",
-                        snippet=title[:120],
+                        url=href,
+                        title=title[:100],
+                        platform=platform,
+                        platform_name=platform_name,
+                        content_type=_content_type_for_platform(platform),
+                        snippet=snippet[:120],
                     ))
-                except Exception:
-                    continue
+            except Exception as e:
+                self.logger.warning(f"Bing RSS失败: {str(e)[:80]}")
 
-            self.logger.info(f"Bing site:{site} '{keyword}': {len(results)} 条")
+        if results:
+            self.logger.info(f"Bing RSS {platform_name}: {len(results)} 条")
+        return results
+
+    def _search_duckduckgo_site(self, keyword: str, platform: str, site: str, platform_name: str,
+                                max_results: int = 20) -> list[SearchResult]:
+        results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        try:
+            for query in _platform_site_queries(keyword, platform, site, platform_name):
+                if len(results) >= max_results:
+                    break
+                search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
+                self._navigate(search_url, wait_until="domcontentloaded", timeout=20000)
+                time.sleep(2)
+
+                items = self._page.query_selector_all('a.result__a, .result__title a, h2 a, a[href]')
+                for item in items:
+                    if len(results) >= max_results:
+                        break
+                    try:
+                        href = _normalize_result_url(item.get_attribute("href") or "")
+                        if not href or href in seen_urls:
+                            continue
+                        if not _is_platform_content_url(href, platform):
+                            continue
+                        seen_urls.add(href)
+
+                        title = item.inner_text().strip()
+                        result = self._make_result(href, title, platform_name)
+                        if result:
+                            results.append(result)
+                    except Exception:
+                        continue
         except Exception as e:
-            self.logger.warning(f"Bing site失败: {str(e)[:80]}")
+            self.logger.warning(f"DuckDuckGo site失败: {str(e)[:80]}")
         return results
 
     def _search_bing_general(self, keyword: str, platform: str, platform_name: str,
@@ -597,13 +888,14 @@ class PlatformSearcher:
                 if len(results) >= max_results:
                     break
                 try:
-                    link_el = item if item.tag_name == 'a' else item.query_selector('h2 a, a[href]')
+                    link_el = item if self._element_tag_name(item) == 'a' else item.query_selector('h2 a, a[href]')
                     if not link_el:
                         continue
                     href = link_el.get_attribute("href") or ""
-                    if not href.startswith("http"):
+                    href = _normalize_result_url(href)
+                    if not href or _is_search_engine_or_local_url(href):
                         continue
-                    if any(d in href for d in ["bing.com", "microsoft.com", "localhost"]):
+                    if platform != "web" and not _is_platform_content_url(href, platform):
                         continue
                     if href in seen_urls:
                         continue
@@ -615,7 +907,7 @@ class PlatformSearcher:
                     results.append(SearchResult(
                         url=href, title=title[:100],
                         platform=plat, platform_name=pname,
-                        content_type="video" if plat in ("douyin", "bilibili", "youtube") else "image_text",
+                        content_type=_content_type_for_platform(plat),
                         snippet=title[:120],
                     ))
                 except Exception:
@@ -627,19 +919,199 @@ class PlatformSearcher:
         return results
 
 
+def _host_matches(hostname: str, domains: tuple[str, ...]) -> bool:
+    host = (hostname or "").lower().strip(".")
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def _decode_wrapped_search_url(url: str) -> str:
+    """解开 Bing/DuckDuckGo 的跳转包装，返回真实目标 URL。"""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    query = parse_qs(parsed.query)
+
+    if _host_matches(host, ("bing.com",)) and parsed.path.startswith("/ck/a"):
+        raw = query.get("u", [""])[0]
+        if raw.startswith("a1"):
+            encoded = raw[2:]
+            padding = "=" * (-len(encoded) % 4)
+            try:
+                return base64.urlsafe_b64decode(encoded + padding).decode("utf-8", errors="ignore")
+            except Exception:
+                return url
+
+    if _host_matches(host, ("duckduckgo.com",)):
+        raw = query.get("uddg", [""])[0]
+        if raw:
+            return unquote(raw)
+
+    return url
+
+
+def _normalize_result_url(url: str) -> str:
+    if not url:
+        return ""
+    decoded = _decode_wrapped_search_url(url.strip())
+    parsed = urlparse(decoded)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", parsed.query, ""))
+
+
+def _is_search_engine_or_local_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return _host_matches(host, ("bing.com", "microsoft.com", "duckduckgo.com", "localhost"))
+
+
+def _platform_from_site(site: str) -> str:
+    platform, _ = _guess_platform_from_url(f"https://{site}/")
+    return platform
+
+
+def _content_type_for_platform(platform: str) -> str:
+    return "video" if platform in ("douyin", "bilibili", "youtube") else "image_text"
+
+
+def _is_platform_content_url(url: str, platform: str) -> bool:
+    parsed = urlparse(_normalize_result_url(url) or url)
+    host = parsed.hostname or ""
+    path = parsed.path.lower()
+
+    if platform == "douyin":
+        return _host_matches(host, ("douyin.com", "iesdouyin.com")) and (
+            "/video/" in path or "/note/" in path or "/share/video/" in path
+        )
+    if platform == "bilibili":
+        return _host_matches(host, ("bilibili.com", "b23.tv")) and (
+            "/video/" in path or path.startswith("/")
+        )
+    if platform == "xiaohongshu":
+        return _host_matches(host, ("xiaohongshu.com", "xhslink.com")) and (
+            "/explore/" in path or "/note/" in path or "/discovery/item/" in path
+        )
+    if platform == "youtube":
+        return _host_matches(host, ("youtube.com", "youtu.be")) and (
+            "/watch" in path or "/shorts/" in path or _host_matches(host, ("youtu.be",))
+        )
+    if platform == "instagram":
+        match = re.match(r"^/(?:p|reel|tv)/([a-z0-9_.-]+)/?$", path)
+        if not _host_matches(host, ("instagram.com",)) or not match:
+            return False
+        shortcode = match.group(1)
+        return shortcode not in {"signin", "login", "accounts"} and len(shortcode) >= 8
+    if platform == "facebook":
+        query = parse_qs(parsed.query)
+        return _host_matches(host, ("facebook.com", "fb.com", "fb.watch")) and (
+            "/videos/" in path or "/posts/" in path
+            or "/reel/" in path or "/share/v/" in path
+            or _host_matches(host, ("fb.watch",)) or bool(query.get("v"))
+        )
+    return True
+
+
+def _platform_site_queries(keyword: str, platform: str, site: str, platform_name: str) -> list[str]:
+    base = [
+        f"site:{site} {keyword}",
+        f"{platform_name} {keyword} site:{site}",
+    ]
+    extra = {
+        "douyin": [
+            f"site:douyin.com/video {keyword}",
+            f"site:douyin.com/share/video {keyword}",
+            f"抖音 {keyword} 视频",
+        ],
+        "xiaohongshu": [
+            f"site:xiaohongshu.com/explore {keyword}",
+            f"site:xiaohongshu.com/discovery/item {keyword}",
+            f"小红书 {keyword} 笔记",
+        ],
+        "instagram": [
+            f"site:instagram.com/p {keyword}",
+            f"site:instagram.com/reel {keyword}",
+            f"Instagram {keyword} reel",
+        ],
+        "facebook": [
+            f"site:facebook.com/videos {keyword}",
+            f"site:facebook.com/posts {keyword}",
+            f"site:facebook.com/reel {keyword}",
+            f"site:facebook.com/watch {keyword}",
+            f"site:fb.watch {keyword}",
+            f"Facebook {keyword} video",
+        ],
+    }.get(platform, [])
+    return base + extra
+
+
+def _search_profile_seed(platforms: list[str]) -> Optional[Path]:
+    """搜索也复用已保存登录态的副本，避免直搜平台反复要求验证。"""
+    if has_search_login_state():
+        return _SEARCH_PROFILE_DIR
+    if "douyin" not in platforms:
+        return None
+    profile_dir = Path.home() / ".client_lead_miner" / "douyin_profile"
+    if (profile_dir / "Default" / "Preferences").exists() or (profile_dir / "Default" / "Cookies").exists():
+        return profile_dir
+    return None
+
+
+def _search_headless(platforms: list[str], settings=None) -> bool:
+    """部分平台在 headless 搜索页不吐出内容链接，需要短暂使用可见浏览器。"""
+    configured = True
+    try:
+        configured = bool(settings.config.scraper.headless)
+    except Exception:
+        configured = True
+    if "facebook" in platforms:
+        return False
+    return configured
+
+
+def _keyword_english_fallbacks(keyword: str) -> list[str]:
+    """少量高频中文关键词兜底，服务海外平台公开搜索。"""
+    mapping = {
+        "咖啡机": ["coffee machine", "coffeemachine"],
+        "咖啡": ["coffee"],
+        "露营": ["camping"],
+        "美妆": ["beauty"],
+        "护肤": ["skincare"],
+        "家居": ["home decor"],
+        "健身": ["fitness"],
+        "美食": ["food"],
+        "旅行": ["travel"],
+    }
+    variants: list[str] = []
+    for zh, words in mapping.items():
+        if zh in keyword:
+            variants.extend(words)
+    return list(dict.fromkeys(v for v in variants if v and v != keyword))
+
+
+def _instagram_tag_candidates(keyword: str) -> list[str]:
+    candidates: list[str] = []
+    ascii_tag = re.sub(r"[^a-zA-Z0-9]+", "", keyword).lower()
+    if ascii_tag:
+        candidates.append(ascii_tag)
+    for variant in _keyword_english_fallbacks(keyword):
+        tag = re.sub(r"[^a-zA-Z0-9]+", "", variant).lower()
+        if tag:
+            candidates.append(tag)
+    return list(dict.fromkeys(candidates))
+
+
 def _guess_platform_from_url(url: str) -> tuple[str, str]:
-    url_lower = url.lower()
-    if "douyin.com" in url_lower or "iesdouyin" in url_lower:
+    parsed = urlparse(_normalize_result_url(url) or url)
+    host = parsed.hostname or ""
+    if _host_matches(host, ("douyin.com", "iesdouyin.com")):
         return "douyin", "抖音"
-    if "bilibili.com" in url_lower or "b23.tv" in url_lower:
+    if _host_matches(host, ("bilibili.com", "b23.tv")):
         return "bilibili", "B站"
-    if "xiaohongshu.com" in url_lower or "xhslink.com" in url_lower:
+    if _host_matches(host, ("xiaohongshu.com", "xhslink.com")):
         return "xiaohongshu", "小红书"
-    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+    if _host_matches(host, ("youtube.com", "youtu.be")):
         return "youtube", "YouTube"
-    if "instagram.com" in url_lower:
+    if _host_matches(host, ("instagram.com",)):
         return "instagram", "Instagram"
-    if "facebook.com" in url_lower or "fb.com" in url_lower:
+    if _host_matches(host, ("facebook.com", "fb.com", "fb.watch")):
         return "facebook", "Facebook"
     return "web", "网页"
 
@@ -679,15 +1151,23 @@ class SearchManager:
 
             with _search_browser_lock:
                 user_data_dir = tempfile.mkdtemp(prefix="search_edge_")
+                profile_seed = _search_profile_seed(platforms)
+                if profile_seed:
+                    shutil.copytree(profile_seed, user_data_dir, dirs_exist_ok=True)
+                    self.log_callback("INFO", "已载入平台搜索登录态")
+                headless = _search_headless(platforms, self.settings)
+                if not headless:
+                    self.log_callback("INFO", "当前平台需要可见浏览器，搜索窗口会自动打开并在结束后关闭")
                 launch_args = [
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu",
                 ]
+                if headless:
+                    launch_args.append("--disable-gpu")
                 context = pw.chromium.launch_persistent_context(
                     user_data_dir=user_data_dir,
-                    headless=True,
+                    headless=headless,
                     channel="msedge",
                     args=launch_args,
                     viewport={"width": 1920, "height": 1080},
@@ -704,7 +1184,7 @@ class SearchManager:
             self.log_callback("INFO", "浏览器已启动（单上下文 + 独立页面）")
 
             # ===== 每平台创建独立 searcher（各自管理自己的 page）=====
-            searcher = PlatformSearcher(context, headless=True)
+            searcher = PlatformSearcher(context, headless=headless)
 
             for i, platform in enumerate(platforms):
                 if self._stop_event.is_set():

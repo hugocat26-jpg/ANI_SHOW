@@ -135,7 +135,7 @@ class SearchConfig:
     max_results_per_platform: int = 20
     search_timeout: int = 30
     enable_web_search: bool = True
-    platforms: tuple = ("douyin", "bilibili", "xiaohongshu", "youtube")
+    platforms: tuple = ("douyin", "bilibili", "xiaohongshu", "youtube", "instagram", "facebook")
 
 
 @dataclass

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QFrame, QGraphicsDropShadowEffect,
     QTabWidget, QScrollArea, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QLabel, QPushButton,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QIcon, QAction, QCloseEvent, QColor
@@ -85,6 +86,8 @@ class MainWindow(QMainWindow):
 
         # 初始化UI
         self._search_results: list = []
+        self._pending_search_request: Optional[tuple[str, list, str]] = None
+        self._login_worker = None
         self._init_ui()
         self._init_tray()
         self._connect_signals()
@@ -399,6 +402,7 @@ class MainWindow(QMainWindow):
         self.search_input.search_requested.connect(self._on_search_content)
         self.search_input.search_company.connect(self._on_search_company)
         self.search_input.add_urls.connect(self.link_input.append_urls)
+        self.search_input.platform_login_requested.connect(self._on_platform_login)
         # 搜索结果加入后自动切到采集 Tab
         self.search_input.add_urls.connect(lambda urls: self._tabs.setCurrentIndex(1))
 
@@ -426,12 +430,30 @@ class MainWindow(QMainWindow):
 
     def _on_search_content(self, keyword: str, platforms: list, content_type: str = "all") -> None:
         """处理内容搜索请求 — 平台选择以用户手动勾选为准，content_type 仅作参考"""
-        from core.searcher import SearchWorker
+        from core.searcher import LOGIN_REQUIRED_PLATFORMS, SearchWorker, has_search_login_state
 
         if not platforms:
             QMessageBox.warning(self, "提示", "请至少选择一个平台")
             self.search_input.set_searching(False)
             return
+
+        login_platforms = [p for p in platforms if p in LOGIN_REQUIRED_PLATFORMS]
+        if login_platforms and not has_search_login_state():
+            names = "、".join({
+                "douyin": "抖音",
+                "xiaohongshu": "小红书",
+                "instagram": "Instagram",
+                "facebook": "Facebook",
+            }.get(p, p) for p in login_platforms)
+            reply = QMessageBox.question(
+                self,
+                "需要平台登录",
+                f"{names} 可能需要登录后才能返回完整搜索结果。\n是否现在打开登录窗口？\n\n登录完成后请关闭浏览器，本次搜索会自动继续。",
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._pending_search_request = (keyword, platforms, content_type)
+                self._start_platform_login(login_platforms[0])
+                return
 
         # 清空上次搜索结果
         self._search_results = []
@@ -544,6 +566,45 @@ class MainWindow(QMainWindow):
         self.search_input.set_searching(False)
         self.search_log.append(f"✗ 搜索失败: {error}")
         QMessageBox.warning(self, "搜索错误", f"搜索失败:\n{error}")
+
+    def _on_platform_login(self) -> None:
+        """手动打开平台登录窗口。"""
+        items = ["抖音", "小红书", "Instagram", "Facebook"]
+        item, ok = QInputDialog.getItem(self, "平台登录", "选择需要登录的平台：", items, 0, False)
+        if not ok or not item:
+            return
+        platform = {
+            "抖音": "douyin",
+            "小红书": "xiaohongshu",
+            "Instagram": "instagram",
+            "Facebook": "facebook",
+        }[item]
+        self._start_platform_login(platform)
+
+    def _start_platform_login(self, platform: str) -> None:
+        from core.searcher import PlatformLoginWorker
+
+        if self._login_worker and self._login_worker.isRunning():
+            QMessageBox.information(self, "平台登录", "已有登录窗口正在运行，请先完成当前登录。")
+            return
+        self.search_input.set_status("正在打开平台登录窗口...")
+        self._login_worker = PlatformLoginWorker(platform)
+        self._login_worker.log.connect(self._on_search_log)
+        self._login_worker.login_finished.connect(self._on_platform_login_finished)
+        self._login_worker.start()
+
+    def _on_platform_login_finished(self, platform: str, success: bool, message: str) -> None:
+        if success:
+            self.search_log.append(f"✓ {message}")
+            QMessageBox.information(self, "平台登录", message)
+            if self._pending_search_request:
+                keyword, platforms, content_type = self._pending_search_request
+                self._pending_search_request = None
+                QTimer.singleShot(200, lambda: self._on_search_content(keyword, platforms, content_type))
+        else:
+            self.search_log.append(f"✗ 登录失败: {message}")
+            QMessageBox.warning(self, "平台登录失败", message)
+            self.search_input.set_searching(False)
 
     def _toggle_search_results(self, checked: bool) -> None:
         """全选/取消全选搜索结果"""

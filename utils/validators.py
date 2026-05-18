@@ -108,10 +108,13 @@ class LinkValidator:
             if match:
                 return match.group(1)
         elif platform_id == "xiaohongshu":
-            match = re.search(r"/explore/(\w+)", url)
+            match = re.search(r"/explore/([\w\-]+)", url)
             if match:
                 return match.group(1)
-            match = re.search(r"/note/(\w+)", url)
+            match = re.search(r"/note/([\w\-]+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"/discovery/item/([\w\-]+)", url)
             if match:
                 return match.group(1)
         elif platform_id == "bilibili":
@@ -134,6 +137,15 @@ class LinkValidator:
             if match:
                 return match.group(1)
             match = re.search(r"/posts/(\w+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"/reel/(\d+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"[?&]v=(\d+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"/share/v/([\w\-]+)", url)
             if match:
                 return match.group(1)
         return None
