@@ -36,8 +36,8 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
   async fetchHtml(url: string, platformKey = 'default'): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
-      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { headless: true })
-      : await chromium.launchPersistentContext('', { headless: true })
+      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
+      : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
     try {
       const page = context.pages()[0] ?? await context.newPage()
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -51,8 +51,8 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
   async fetchRenderedHtml(url: string, platformKey: string, options: RenderPageOptions = {}): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
-      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { headless: true })
-      : await chromium.launchPersistentContext('', { headless: true })
+      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
+      : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
     try {
       const page = context.pages()[0] ?? await context.newPage()
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -88,8 +88,8 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
   async fetchText(url: string, platformKey: string, options: FetchTextOptions = {}): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
-      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { headless: true })
-      : await chromium.launchPersistentContext('', { headless: true })
+      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
+      : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
     try {
       const response = await context.request.fetch(url, {
         method: options.method ?? 'GET',

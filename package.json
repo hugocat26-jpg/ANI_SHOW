@@ -22,8 +22,7 @@
     "win": {
       "signAndEditExecutable": false,
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },

@@ -56,6 +56,7 @@ export class BrowserContextManager {
 
     const { chromium } = await import('playwright')
     const context = await chromium.launchPersistentContext(profile.userDataDir, {
+      executablePath: chromium.executablePath(),
       headless: false,
       viewport: { width: 1280, height: 860 }
     })

@@ -7,6 +7,11 @@ import { createDefaultApplicationCore, type SecretCodec } from '../../../../pack
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+if (app.isPackaged && !process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = '0'
+}
+
 const core = createDefaultApplicationCore({
   dataPath: path.join(app.getPath('userData'), 'lead-miner.sqlite3'),
   profileRoot: path.join(app.getPath('userData'), 'profiles'),
