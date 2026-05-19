@@ -5,7 +5,7 @@ import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProvide
 import { getLeadMinerApi } from './leadMinerApi'
 
 const api = getLeadMinerApi()
-type ViewKey = 'dashboard' | 'platforms' | 'tasks' | 'leads' | 'ai' | 'settings'
+type ViewKey = 'dashboard' | 'platforms' | 'searchResults' | 'tasks' | 'leads' | 'ai' | 'settings'
 
 export function App() {
   const [keyword, setKeyword] = useState('咖啡机')
@@ -41,6 +41,8 @@ export function App() {
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([])
   const [platformDefaultsReady, setPlatformDefaultsReady] = useState(false)
   const [selectedResultIds, setSelectedResultIds] = useState<string[]>([])
+  const [collectProgressByResultId, setCollectProgressByResultId] = useState<Record<string, ResultCollectProgress>>({})
+  const [batchCollectProgress, setBatchCollectProgress] = useState<BatchCollectProgress | undefined>()
   const [selectionBox, setSelectionBox] = useState<SelectionBox | undefined>()
   const resultListRef = useRef<HTMLDivElement | null>(null)
 
@@ -67,6 +69,7 @@ export function App() {
   useEffect(() => {
     const resultIds = new Set(results.map((result) => result.id))
     setSelectedResultIds((current) => current.filter((id) => resultIds.has(id)))
+    setCollectProgressByResultId((current) => Object.fromEntries(Object.entries(current).filter(([id]) => resultIds.has(id))))
   }, [results])
 
   useEffect(() => {
@@ -184,13 +187,44 @@ export function App() {
 
   async function collect(result: SearchResult) {
     setBusy(true)
+    setBatchCollectProgress({
+      current: 1,
+      total: 1,
+      title: result.title,
+      message: '准备采集评论'
+    })
+    setResultCollectProgress(result.id, {
+      status: 'running',
+      message: '正在打开内容并加载评论',
+      comments: 0,
+      updatedAt: new Date().toISOString()
+    })
     try {
       const nextComments = await collectByUrl(result.platformKey, result.url)
+      setResultCollectProgress(result.id, {
+        status: 'completed',
+        message: `采集完成，获得 ${nextComments.length} 条评论`,
+        comments: nextComments.length,
+        updatedAt: new Date().toISOString()
+      })
+      setBatchCollectProgress({
+        current: 1,
+        total: 1,
+        title: result.title,
+        message: `采集完成，获得 ${nextComments.length} 条评论`
+      })
       setNotice(`已采集 ${nextComments.length} 条评论: ${result.title}`)
     } catch (error) {
+      setResultCollectProgress(result.id, {
+        status: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+        comments: 0,
+        updatedAt: new Date().toISOString()
+      })
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
+      window.setTimeout(() => setBatchCollectProgress(undefined), 1600)
     }
   }
 
@@ -201,19 +235,80 @@ export function App() {
       return
     }
     setBusy(true)
+    const total = selectedResults.length
+    setBatchCollectProgress({
+      current: 0,
+      total,
+      title: '批量采集',
+      message: `等待采集 ${total} 个搜索结果`
+    })
+    const now = new Date().toISOString()
+    setCollectProgressByResultId((current) => ({
+      ...current,
+      ...Object.fromEntries(selectedResults.map((result) => [result.id, {
+        status: 'pending',
+        message: '等待批量采集',
+        comments: 0,
+        updatedAt: now
+      } satisfies ResultCollectProgress]))
+    }))
+    let activeResultId = ''
     try {
       let totalComments = 0
-      for (const result of selectedResults) {
+      for (const [index, result] of selectedResults.entries()) {
+        activeResultId = result.id
+        setBatchCollectProgress({
+          current: index + 1,
+          total,
+          title: result.title,
+          message: `正在采集 ${index + 1}/${total}`
+        })
+        setResultCollectProgress(result.id, {
+          status: 'running',
+          message: `正在采集 ${index + 1}/${total}`,
+          comments: 0,
+          updatedAt: new Date().toISOString()
+        })
         const nextComments = await collectByUrl(result.platformKey, result.url)
         totalComments += nextComments.length
+        setResultCollectProgress(result.id, {
+          status: 'completed',
+          message: `采集完成，获得 ${nextComments.length} 条评论`,
+          comments: nextComments.length,
+          updatedAt: new Date().toISOString()
+        })
       }
       setSelectedResultIds([])
+      setBatchCollectProgress({
+        current: total,
+        total,
+        title: '批量采集完成',
+        message: `共采集 ${totalComments} 条评论`
+      })
       setNotice(`已批量采集 ${selectedResults.length} 个内容，共 ${totalComments} 条评论`)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      if (activeResultId) {
+        setResultCollectProgress(activeResultId, {
+          status: 'failed',
+          message,
+          comments: 0,
+          updatedAt: new Date().toISOString()
+        })
+      }
+      setBatchCollectProgress((current) => current ? {
+        ...current,
+        message
+      } : current)
+      setNotice(message)
     } finally {
       setBusy(false)
+      window.setTimeout(() => setBatchCollectProgress(undefined), 2200)
     }
+  }
+
+  function setResultCollectProgress(resultId: string, progress: ResultCollectProgress) {
+    setCollectProgressByResultId((current) => ({ ...current, [resultId]: progress }))
   }
 
   function toggleResultSelection(id: string) {
@@ -538,6 +633,7 @@ export function App() {
         {[
           ['dashboard', '搜索工作台'] as const,
           ['platforms', '平台中心'] as const,
+          ['searchResults', '搜索结果'] as const,
           ['tasks', '任务中心'] as const,
           ['leads', '线索中心'] as const,
           ['ai', 'AI 分析'] as const,
@@ -684,7 +780,7 @@ export function App() {
             )}
           </div> : null}
 
-          {isVisible(selected, 'dashboard') ? <div className="panel wide">
+          {isVisible(selected, 'dashboard', 'searchResults') ? <div className="panel wide">
             <div className="panelHead">
               <h2>搜索结果</h2>
               <div className="panelActions">
@@ -697,6 +793,17 @@ export function App() {
                 ) : null}
               </div>
             </div>
+            {batchCollectProgress ? (
+              <div className="collectProgress">
+                <div className="collectProgressMeta">
+                  <strong>{batchCollectProgress.message}</strong>
+                  <span>{batchCollectProgress.current}/{batchCollectProgress.total} · {batchCollectProgress.title}</span>
+                </div>
+                <div className="progressTrack">
+                  <span style={{ width: `${Math.min(100, Math.round((batchCollectProgress.current / Math.max(1, batchCollectProgress.total)) * 100))}%` }} />
+                </div>
+              </div>
+            ) : null}
             {results.length === 0 ? (
               <div className="funnel">
               <div><strong>搜索结果</strong><b>{results.length}</b></div>
@@ -720,6 +827,12 @@ export function App() {
                       <span>{result.platformKey} · relevance {result.relevance.toFixed(2)}</span>
                       <p>{result.snippet}</p>
                     </a>
+                    {collectProgressByResultId[result.id] ? (
+                      <div className={`resultCollectState ${collectProgressByResultId[result.id].status}`}>
+                        <span>{resultCollectStatusLabel(collectProgressByResultId[result.id].status)}</span>
+                        <small>{collectProgressByResultId[result.id].message}</small>
+                      </div>
+                    ) : null}
                     <label className="resultSelect">
                       <input checked={selectedResultIds.includes(result.id)} type="checkbox" onChange={() => toggleResultSelection(result.id)} />
                       选择
@@ -1039,6 +1152,20 @@ interface SelectionBox {
   currentY: number
 }
 
+interface ResultCollectProgress {
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  message: string
+  comments: number
+  updatedAt: string
+}
+
+interface BatchCollectProgress {
+  current: number
+  total: number
+  title: string
+  message: string
+}
+
 interface RectLike {
   left: number
   top: number
@@ -1066,6 +1193,13 @@ function selectionBoxStyle(box: SelectionBox): CSSProperties {
 
 function intersects(a: RectLike, b: RectLike): boolean {
   return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
+}
+
+function resultCollectStatusLabel(status: ResultCollectProgress['status']): string {
+  if (status === 'pending') return '等待中'
+  if (status === 'running') return '采集中'
+  if (status === 'completed') return '已完成'
+  return '失败'
 }
 
 function followUpLabel(status: FollowUpReminder['status'], daysUntilDue: number): string {

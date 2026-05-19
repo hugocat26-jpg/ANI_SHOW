@@ -492,6 +492,102 @@ button:focus-visible {
   background: #fff;
 }
 
+.collectProgress {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.collectProgressMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.collectProgressMeta strong,
+.collectProgressMeta span {
+  display: block;
+}
+
+.collectProgressMeta strong {
+  color: #1d4ed8;
+}
+
+.collectProgressMeta span {
+  color: #526071;
+  font-size: 12px;
+  text-align: right;
+}
+
+.progressTrack {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dbeafe;
+}
+
+.progressTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f80ed;
+  transition: width 0.2s ease;
+}
+
+.resultCollectState {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #f1f5f9;
+}
+
+.resultCollectState span {
+  margin: 0;
+  font-weight: 700;
+  color: #475569;
+}
+
+.resultCollectState small {
+  color: #667085;
+  text-align: right;
+}
+
+.resultCollectState.pending {
+  background: #f8fafc;
+}
+
+.resultCollectState.running {
+  background: #eff6ff;
+}
+
+.resultCollectState.running span {
+  color: #1d4ed8;
+}
+
+.resultCollectState.completed {
+  background: #dcfce7;
+}
+
+.resultCollectState.completed span {
+  color: #166534;
+}
+
+.resultCollectState.failed {
+  background: #fee2e2;
+}
+
+.resultCollectState.failed span {
+  color: #991b1b;
+}
+
 .resultSelect {
   display: flex;
   width: fit-content;
