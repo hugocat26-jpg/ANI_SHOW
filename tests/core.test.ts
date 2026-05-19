@@ -1324,6 +1324,37 @@ test('search engine adapter checks generic login status with latency', async () 
   assert.equal(failed.errorCode, 'network_error')
 })
 
+test('search engine adapter uses auth cookies as login state fallback', async () => {
+  const checked: string[] = []
+  const executor: SearchPageExecutor = {
+    async fetchHtml() {
+      return '<main><button>扫码登录</button><a>请登录后继续</a></main>'
+    },
+    async hasAuthCookies(platformKey, url) {
+      checked.push(`${platformKey}:${url}`)
+      return true
+    }
+  }
+  const spec: PlatformSpec = {
+    key: 'douyin',
+    name: '抖音',
+    category: 'video',
+    domains: ['douyin.com'],
+    loginUrl: 'https://www.douyin.com/',
+    requiresLogin: true,
+    capabilities: ['search', 'login', 'status', 'parse_content', 'comments'],
+    rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 }
+  }
+
+  const status = await new SearchEngineAdapter(spec, (keyword) => `https://example.test?q=${keyword}`, undefined, executor).checkStatus()
+
+  assert.deepEqual(checked, ['douyin:https://www.douyin.com/'])
+  assert.equal(status.available, true)
+  assert.equal(status.loggedIn, true)
+  assert.equal(status.errorCode, 'ok')
+  assert.equal(status.message, '抖音 登录态有效')
+})
+
 test('search html parser extracts generic external result anchors safely', () => {
   const html = `
     <html>

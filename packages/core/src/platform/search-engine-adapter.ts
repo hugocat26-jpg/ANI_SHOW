@@ -34,14 +34,18 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
       const loggedIn = inferLoggedInFromHtml(html)
       const loginRequired = inferLoginRequiredFromHtml(html)
       const shouldLogin = this.spec.requiresLogin || this.spec.capabilities.includes('login')
+      const cookieLoggedIn = shouldLogin && !loggedIn && this.executor.hasAuthCookies
+        ? await this.executor.hasAuthCookies(this.spec.key, statusUrl).catch(() => false)
+        : false
+      const effectiveLoggedIn = loggedIn || cookieLoggedIn
       return {
         platformKey: this.spec.key,
         available: true,
-        loggedIn: loggedIn || (!shouldLogin && !loginRequired),
+        loggedIn: effectiveLoggedIn || (!shouldLogin && !loginRequired),
         latencyMs: Date.now() - startedAt,
         checkedAt: new Date().toISOString(),
-        errorCode: loggedIn || (!shouldLogin && !loginRequired) ? 'ok' : 'login_required',
-        message: loggedIn
+        errorCode: effectiveLoggedIn || (!shouldLogin && !loginRequired) ? 'ok' : 'login_required',
+        message: effectiveLoggedIn
           ? `${this.spec.name} 登录态有效`
           : shouldLogin
             ? `${this.spec.name} 未确认登录态；如搜索或评论受限，请先登录/验证`

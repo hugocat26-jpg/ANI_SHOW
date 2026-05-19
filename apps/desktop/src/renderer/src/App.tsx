@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 
 import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadRecord, ModelPricingView, PlatformSpec, PlatformStatus, SearchResult, Task } from '../../../../../packages/core/src/index'
 import { getLeadMinerApi } from './leadMinerApi'
@@ -39,6 +40,9 @@ export function App() {
   const [notice, setNotice] = useState('')
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([])
   const [platformDefaultsReady, setPlatformDefaultsReady] = useState(false)
+  const [selectedResultIds, setSelectedResultIds] = useState<string[]>([])
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | undefined>()
+  const resultListRef = useRef<HTMLDivElement | null>(null)
 
   const statusByPlatform = useMemo(() => new Map(statuses.map((status) => [status.platformKey, status])), [statuses])
   const searchableKeys = useMemo(() => selectedPlatforms, [selectedPlatforms])
@@ -48,11 +52,22 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 5000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  useEffect(() => {
     if (platforms.length > 0 && !platformDefaultsReady) {
       setSelectedPlatforms(platforms.filter((platform) => ['google', 'bing', 'youtube', 'bilibili'].includes(platform.key)).map((platform) => platform.key))
       setPlatformDefaultsReady(true)
     }
   }, [platforms, platformDefaultsReady])
+
+  useEffect(() => {
+    const resultIds = new Set(results.map((result) => result.id))
+    setSelectedResultIds((current) => current.filter((id) => resultIds.has(id)))
+  }, [results])
 
   useEffect(() => {
     if (!api.notifyFollowUps) return
@@ -130,6 +145,7 @@ export function App() {
       const nextResults = await api.runSearch({ keyword, platformKeys: searchableKeys })
       setKeywordPlan(plan)
       setResults(nextResults)
+      setSelectedResultIds([])
       setTasks(await api.listTasks())
       setNotice(`已入库 ${nextResults.length} 条搜索结果`)
     } catch (error) {
@@ -176,6 +192,67 @@ export function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function collectSelectedResults() {
+    const selectedResults = results.filter((result) => selectedResultIds.includes(result.id))
+    if (selectedResults.length === 0) {
+      setNotice('请先框选或勾选要采集的搜索结果')
+      return
+    }
+    setBusy(true)
+    try {
+      let totalComments = 0
+      for (const result of selectedResults) {
+        const nextComments = await collectByUrl(result.platformKey, result.url)
+        totalComments += nextComments.length
+      }
+      setSelectedResultIds([])
+      setNotice(`已批量采集 ${selectedResults.length} 个内容，共 ${totalComments} 条评论`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function toggleResultSelection(id: string) {
+    setSelectedResultIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
+  }
+
+  function startResultSelection(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return
+    const target = event.target as HTMLElement
+    if (target.closest('a,button,input,label,select,textarea')) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setSelectionBox({
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY
+    })
+  }
+
+  function moveResultSelection(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!selectionBox?.active) return
+    setSelectionBox((current) => current ? { ...current, currentX: event.clientX, currentY: event.clientY } : current)
+  }
+
+  function finishResultSelection() {
+    if (!selectionBox?.active || !resultListRef.current) {
+      setSelectionBox(undefined)
+      return
+    }
+    const marquee = normalizedBox(selectionBox)
+    const nextIds = [...resultListRef.current.querySelectorAll<HTMLElement>('[data-result-id]')]
+      .filter((node) => intersects(marquee, node.getBoundingClientRect()))
+      .map((node) => node.dataset.resultId)
+      .filter((id): id is string => Boolean(id))
+    if (nextIds.length > 0) {
+      setSelectedResultIds((current) => [...new Set([...current, ...nextIds])])
+    }
+    setSelectionBox(undefined)
   }
 
   async function collectByUrl(platformKey: string, url: string) {
@@ -448,6 +525,8 @@ export function App() {
 
   return (
     <main className="shell">
+      {notice ? <div className="toastNotice" role="status">{notice}</div> : null}
+      {selectionBox?.active ? <div className="selectionMarquee" style={selectionBoxStyle(selectionBox)} /> : null}
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark">LM</span>
@@ -487,7 +566,6 @@ export function App() {
           <button className="secondary" onClick={planKeyword}>AI 扩展</button>
           <button className="primary" disabled={busy} onClick={runSearch}>{busy ? '搜索中...' : '搜索并入库'}</button>
         </section>
-        {notice ? <div className="notice">{notice}</div> : null}
 
         <section className="grid">
           {isVisible(selected, 'dashboard', 'platforms') ? <div className="panel wide">
@@ -609,7 +687,15 @@ export function App() {
           {isVisible(selected, 'dashboard') ? <div className="panel wide">
             <div className="panelHead">
               <h2>搜索结果</h2>
-              <span>{results.length} 条</span>
+              <div className="panelActions">
+                <span>{results.length} 条</span>
+                {results.length > 0 ? <span>已选 {selectedResultIds.length}</span> : null}
+                {results.length > 0 ? (
+                  <button className="miniButton inline" disabled={busy || selectedResultIds.length === 0} onClick={collectSelectedResults}>
+                    采集已选
+                  </button>
+                ) : null}
+              </div>
             </div>
             {results.length === 0 ? (
               <div className="funnel">
@@ -619,14 +705,25 @@ export function App() {
               <div><strong>待跟进</strong><b>0</b></div>
               </div>
             ) : (
-              <div className="resultList">
+              <div
+                className="resultList selectableResults"
+                ref={resultListRef}
+                onPointerDown={startResultSelection}
+                onPointerMove={moveResultSelection}
+                onPointerUp={finishResultSelection}
+                onPointerCancel={finishResultSelection}
+              >
                 {results.map((result) => (
-                  <article className="resultItem" key={result.id}>
+                  <article className={selectedResultIds.includes(result.id) ? 'resultItem selected' : 'resultItem'} data-result-id={result.id} key={result.id}>
                     <a href={result.url} target="_blank" rel="noreferrer">
                       <strong>{result.title}</strong>
                       <span>{result.platformKey} · relevance {result.relevance.toFixed(2)}</span>
                       <p>{result.snippet}</p>
                     </a>
+                    <label className="resultSelect">
+                      <input checked={selectedResultIds.includes(result.id)} type="checkbox" onChange={() => toggleResultSelection(result.id)} />
+                      选择
+                    </label>
                     <button className="miniButton" disabled={busy} onClick={() => collect(result)}>采集评论</button>
                   </article>
                 ))}
@@ -932,6 +1029,43 @@ export function App() {
       </section>
     </main>
   )
+}
+
+interface SelectionBox {
+  active: boolean
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+}
+
+interface RectLike {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function normalizedBox(box: SelectionBox): RectLike {
+  const left = Math.min(box.startX, box.currentX)
+  const top = Math.min(box.startY, box.currentY)
+  const right = Math.max(box.startX, box.currentX)
+  const bottom = Math.max(box.startY, box.currentY)
+  return { left, top, right, bottom }
+}
+
+function selectionBoxStyle(box: SelectionBox): CSSProperties {
+  const rect = normalizedBox(box)
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.right - rect.left,
+    height: rect.bottom - rect.top
+  }
+}
+
+function intersects(a: RectLike, b: RectLike): boolean {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
 
 function followUpLabel(status: FollowUpReminder['status'], daysUntilDue: number): string {

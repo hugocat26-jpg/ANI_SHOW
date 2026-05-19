@@ -5,6 +5,7 @@ export interface SearchPageExecutor {
   fetchHtml(url: string, platformKey: string): Promise<string>
   fetchRenderedHtml?(url: string, platformKey: string, options?: RenderPageOptions): Promise<string>
   fetchText?(url: string, platformKey: string, options?: FetchTextOptions): Promise<string>
+  hasAuthCookies?(platformKey: string, url: string): Promise<boolean>
 }
 
 export interface RenderPageOptions {
@@ -102,6 +103,35 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
       await context.close()
     }
   }
+
+  async hasAuthCookies(platformKey: string, url: string): Promise<boolean> {
+    const { chromium } = await import('playwright')
+    const context = this.browser
+      ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
+      : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
+    try {
+      const cookies = await context.cookies(url)
+      return cookies.some((cookie) => isAuthCookie(platformKey, cookie.name))
+    } finally {
+      await context.close()
+    }
+  }
+}
+
+function isAuthCookie(platformKey: string, name: string): boolean {
+  const lower = name.toLowerCase()
+  const platformMarkers: Record<string, string[]> = {
+    douyin: ['sessionid', 'sid_guard', 'sid_tt', 'uid_tt', 'passport_auth_status', 'passport_csrf_token'],
+    xiaohongshu: ['web_session', 'webid', 'gid', 'customerclientid'],
+    tiktok: ['sessionid', 'sid_guard', 'sid_tt'],
+    instagram: ['sessionid', 'ds_user_id', 'csrftoken'],
+    facebook: ['c_user', 'xs', 'fr'],
+    twitter: ['auth_token', 'ct0'],
+    weibo: ['sub', 'subp', 'sso_login_status'],
+    zhihu: ['z_c0', '_zap'],
+    kuaishou: ['kuaishou.server.web_ph', 'did', 'userid']
+  }
+  return (platformMarkers[platformKey] ?? ['session', 'auth', 'token', 'uid']).some((marker) => lower.includes(marker.toLowerCase()))
 }
 
 async function trySelectYoutubeNewestComments(page: { evaluate: <T, A>(pageFunction: (arg: A) => T, arg: A) => Promise<T>; waitForTimeout: (timeout: number) => Promise<void> }): Promise<void> {

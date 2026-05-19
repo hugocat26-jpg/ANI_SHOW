@@ -10,6 +10,7 @@
 
 body {
   margin: 0;
+  overflow: hidden;
 }
 
 button,
@@ -19,13 +20,37 @@ textarea {
   font: inherit;
 }
 
+button {
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.14);
+}
+
+button:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: inset 0 2px 5px rgba(15, 23, 42, 0.2);
+}
+
+button:focus-visible {
+  outline: 3px solid rgba(47, 128, 237, 0.25);
+  outline-offset: 2px;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 248px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   background: #101827;
   color: #dbe4f0;
   padding: 22px 16px;
@@ -74,7 +99,14 @@ textarea {
   color: #ffffff;
 }
 
+.nav:not(:disabled):active {
+  background: #263955;
+}
+
 .workspace {
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
   padding: 24px;
 }
 
@@ -119,6 +151,17 @@ textarea {
 .primary:disabled {
   cursor: wait;
   opacity: 0.7;
+}
+
+.primary:not(:disabled):hover {
+  background: #1f6ed8;
+}
+
+.secondary:not(:disabled):hover,
+.miniButton:not(:disabled):hover {
+  border-color: #2f80ed;
+  background: #f8fbff;
+  color: #1d4ed8;
 }
 
 .searchBand {
@@ -242,6 +285,32 @@ textarea {
   border-radius: 8px;
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.toastNotice {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1000;
+  max-width: min(560px, calc(100vw - 40px));
+  padding: 12px 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  animation: toastSlideIn 0.22s ease-out;
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .platform small,
@@ -400,9 +469,50 @@ textarea {
   gap: 10px;
 }
 
+.selectableResults {
+  position: relative;
+  user-select: none;
+}
+
 .resultItem {
   display: grid;
   gap: 8px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.resultItem.selected {
+  border-color: #2f80ed;
+  background: #eff6ff;
+}
+
+.resultItem.selected a {
+  border-color: #93c5fd;
+  background: #fff;
+}
+
+.resultSelect {
+  display: flex;
+  width: fit-content;
+  gap: 8px;
+  align-items: center;
+  color: #475569;
+  font-size: 12px;
+}
+
+.resultSelect input {
+  width: 16px;
+  height: 16px;
+}
+
+.selectionMarquee {
+  position: fixed;
+  z-index: 999;
+  border: 1px solid #2f80ed;
+  border-radius: 4px;
+  background: rgba(47, 128, 237, 0.12);
+  pointer-events: none;
 }
 
 .resultList a {
