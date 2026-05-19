@@ -13,6 +13,10 @@ build/
 dist/
 dist_clean/
 *.egg-info/
+node_modules/
+release/
+out/
+*.tsbuildinfo
 
 # Runtime data
 *.db

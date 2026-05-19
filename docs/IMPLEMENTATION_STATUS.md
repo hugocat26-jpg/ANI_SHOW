@@ -1,0 +1,246 @@
+# 实施进度
+
+## 已完成
+
+- 新架构项目骨架：Electron + React + TypeScript + Playwright + SQLite。
+- 桌面端构建链路：main、preload、renderer 分别构建并可用 Electron Builder 打包。
+- 发布元数据：`package.json` 已补充通用维护者 `author`，避免构建产物缺少基础发布信息。
+- 发布资源：新增 `resources/icon.svg` 和 `resources/icon.ico`，Electron Builder 已使用项目图标生成 Windows 安装包，不再使用默认 Electron 图标。
+- 核心服务层：
+  - `ApplicationCore`
+  - `PlatformRegistry`
+  - `AIService`
+  - `CompliancePolicy`
+  - `TaskOrchestrator`
+  - `LeadMinerRepository`
+- 数据表：
+  - 平台状态
+  - 搜索会话
+  - 搜索结果
+  - 内容记录
+  - 评论记录
+  - 线索记录
+  - 任务记录
+  - 审计日志
+  - AI Provider 配置
+- 平台能力：
+  - Google/Bing 搜索 Adapter。
+  - YouTube/B站搜索 Adapter。
+  - TikTok、抖音、小红书、Instagram、Facebook、X/Twitter、Reddit、微博、知乎、快手已接入第一阶段搜索 Adapter：具备真实搜索 URL、Playwright 页面抓取、通用结果解析和确定性降级。
+  - 通用搜索结果解析增加平台域名过滤和相对链接归一化，避免把外部广告、登录入口或伪造跨域链接当成有效结果。
+  - 通用平台内容链接解析基础层：TikTok、抖音、小红书、Instagram、Facebook、X/Twitter、Reddit、微博、知乎、快手可基于真实 hostname 校验域名，并从常见内容 URL 中提取稳定内容 ID 和内容类型。
+  - YouTube/B站视频内容链接解析也已收紧为真实 hostname 校验，支持主域/子域，拒绝 path/query 中伪造平台域名导致的误识别。
+  - 通用平台内容详情补全基础层：解析内容链接时会尽力抓取内容页 `og:title`、`twitter:title` 或 `<title>`，补充内容标题；登录墙/风控导致抓取失败时保持内容引用可入库、可重试。
+  - 通用平台结构化标题补全：小红书、抖音/TikTok、Instagram、微博、知乎、快手、Reddit 等平台解析内容链接时，会从页面初始化 JSON 的白名单字段中提取标题/正文摘要，补强 meta 缺失场景，并已补齐主要平台常见状态字段的回归覆盖。
+  - YouTube/B站视频内容详情补全：解析视频链接时会尽力抓取 `og:title`、`twitter:title` 或 `<title>`，避免只显示占位标题；页面不可访问时仍保留可入库的内容引用。
+  - YouTube/B站结构化标题补全：当页面 meta 缺失时，会从 `ytInitialPlayerResponse.videoDetails.title` 或 `__INITIAL_STATE__.videoData.title` 读取真实视频标题。
+  - YouTube/B站视频页短生命周期缓存：`parseContent` 已抓取的页面 HTML 会在随后评论采集时复用，减少批量解析/采集时对同一内容页的重复请求。
+  - 通用平台评论采集基础层：非 YouTube/B站平台可基于渲染页或普通 HTML 提取带评论语义的块和 `data-comment-text` 评论钩子，产出标准评论事件；未解析到评论时不生成示例假数据。
+  - Reddit 专用评论采集基础层：优先请求帖子 `.json` 结构并解析公开评论的作者、正文、分数和发布时间；接口不可用或无评论时回退到通用 HTML 解析。
+  - Reddit 更多评论扩展：识别 `.json` 中的 `more` 节点并追加一次 `api/morechildren.json` 请求，合并去重后输出评论。
+  - Reddit 采集异常语义：JSON 接口限流、权限失败且 HTML fallback 也无评论时，任务会按限流或权限语义失败，便于任务中心给出恢复建议。
+  - Reddit 评论排序策略：默认按 `new` 获取近期评论，若原链接带合法 `sort` 参数则保留用户指定排序，并同步到 `morechildren` 请求。
+  - Reddit 异常恢复细化：`.json` 和 `morechildren` 请求可区分 404 删除/不存在、429 限流、401/403/私密/隔离社区权限、5xx 服务端异常和网络超时；后续评论展开失败时保留首屏评论并向任务流输出恢复提示。
+  - 平台失败分类修复：权限/forbidden/unauthorized 语义优先于宽泛 auth 判断，避免 403 类错误被误归类为登录必需。
+  - 小红书评论解析基础层：从页面内嵌 JSON 中识别 `comment_list/comments/commentList/sub_comment` 等评论结构，提取昵称、正文、点赞数和发布时间；未命中时回退通用 HTML 评论解析。
+  - 小红书分页线索识别：从页面内嵌数据中提取 `cursor/nextCursor/endCursor` 与 `hasMore/hasNext`，为后续真实接口翻页采集预留入口。
+  - 小红书机会型翻页请求：当页面已解析到评论并识别到 cursor/hasMore 时，追加一次 `api/sns/web/v2/comment/page` 请求并合并去重；接口失败时保留首屏评论，不中断任务。
+  - 小红书请求参数增强：评论翻页请求会透传内容链接中的 `xsec_token/xsec_source`，并补充 `accept`、`referer`、`x-requested-with` 请求头，为后续真实签名/风控参数接入预留更稳定入口。
+  - 小红书采集异常语义：页面无可解析评论且出现登录、验证码/风控、限流提示时，返回标准失败事件并映射到任务中心错误分类。
+  - 抖音/TikTok 短视频评论解析基础层：从页面内嵌 JSON 中识别 `comments/comment_list` 等结构，提取评论 ID、昵称、正文、点赞数和发布时间；识别 cursor/hasMore 后续页线索，未命中时回退通用 HTML 评论解析。
+  - 抖音/TikTok 机会型翻页请求：当页面已解析到评论并识别到 cursor/hasMore 时，抖音构造 `aweme/v1/web/comment/list` 请求，TikTok 构造 `api/comment/list` 请求，带 `cursor/count`、内容 ID、`accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
+  - 抖音/TikTok 风控参数入口：短视频评论翻页请求会透传内容链接中已有的 `msToken/X-Bogus/_signature/verifyFp/fp/webid` 等参数，并为抖音、TikTok 分别保留/补充 `aid/device_platform` 基础参数；真实签名生成仍作为后续专项。
+  - 抖音/TikTok 采集异常语义：页面无可解析评论且出现登录、验证码/风控、限流提示时，返回标准失败事件并映射到任务中心错误分类。
+  - Instagram 评论解析基础层：从页面内嵌 GraphQL/JSON 中识别 `edge_media_to_parent_comment/edge_threaded_comments` 等评论结构，提取评论 ID、用户名、正文、点赞数和发布时间；识别 `page_info/end_cursor` 后续页线索，未命中时回退通用 HTML 评论解析。
+  - Instagram 机会型翻页请求：当页面已解析到评论并识别到 `end_cursor/has_next_page` 时，构造 Web GraphQL 评论下一页请求，带 `query_hash`、`shortcode/first/after` variables、`accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
+  - Instagram 采集异常语义：页面无可解析评论且出现登录、challenge/captcha、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
+  - 微博评论解析基础层：从页面内嵌 JSON 中识别微博评论结构，提取评论 ID、昵称、正文、点赞数和发布时间；识别 `max_id/cursor` 后续页线索，未命中时回退通用 HTML 评论解析。
+  - 微博机会型翻页请求：当页面已解析到评论并识别到 `max_id/cursor` 时，优先使用安全域名内的 cursor URL，否则构造 `ajax/statuses/buildComments` 下一页请求，带 `accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
+  - 微博采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
+  - 知乎评论解析基础层：从页面内嵌 JSON 或评论接口结构中识别 `data` 评论条目，提取评论 ID、作者、正文、点赞数和发布时间；识别 `paging.next/is_end` 后续页线索，未命中时回退通用 HTML 评论解析。
+  - 知乎机会型翻页请求：当页面已解析到评论并识别到 `paging.next/is_end=false` 时，校验知乎域名后追加一次下一页 JSON 请求，带 `accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
+  - 知乎采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
+  - 快手评论解析基础层：从页面内嵌 JSON/GraphQL 结构中识别 `rootComments/comments/commentList` 等评论结构，提取评论 ID、作者、正文、点赞数和发布时间；支持 `w/W/万` 等紧凑点赞数。
+  - 快手机会型翻页请求：当页面已解析到评论并识别到 `pcursor/cursor/hasMore` 时，构造 `/graphql` 的 `visionCommentList` 请求，带 `photoId/pcursor`、`accept/content-type/origin/referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
+  - 快手采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
+  - YouTube/B站内容链接解析。
+  - YouTube 页面评论 JSON 解析。
+  - YouTube 评论 `runs` 文本拼接与紧凑点赞数解析。
+  - YouTube 新版评论结构解析：除旧版 `commentRenderer` 外，已支持 `commentViewModel` 与 `commentEntityPayload`，提升登录态/新版页面可见评论识别率。
+  - YouTube 评论采集异常语义：页面或 continuation 接口出现登录、验证码/风控、限流、权限不足、评论关闭等阻断提示且无可解析评论时，返回标准失败事件，不再回退到示例评论。
+  - YouTube continuation token 元数据解析，并在可用时通过 `youtubei/v1/next` 拉取后续评论页。
+  - YouTube continuation token 识别覆盖 `continuationCommand.token`、`nextContinuationData.continuation`、`reloadContinuationData.continuation` 和 `timedContinuationData.continuation` 等常见页面/接口返回形态。
+  - YouTube 首屏评论和 continuation 返回评论合并去重。
+  - YouTube continuation 链式分页上限提升到 5 页，并覆盖 `commentThreadRenderer` 包裹评论的分页返回结构。
+  - YouTube 评论采集优先使用 Playwright 渲染滚动页面：滚动评论区并尝试点击“展开/更多/Show more/Read more”后再解析评论。
+  - YouTube 评论排序策略：渲染采集时尝试打开评论排序菜单并选择 `Newest first / 最新`，失败时不阻断采集。
+  - YouTube 可选登录态基础：平台中心显示登录入口，通过独立 Profile 复用登录状态，并基于首页内容判断是否已登录。
+  - YouTube 登录态判断加固：以头像/账户状态等明确登录信号为准，避免页面残留 `Sign in/登录` 字符串导致已登录误判，也避免普通 topbar 被误认为已登录。
+  - YouTube continuation 登录态上下文增强：`youtubei/v1/next` 请求会携带页面 `referer/origin`、`x-goog-visitor-id`、client name/version、`VISITOR_DATA` 与 `useSsl` 上下文，提升登录态可见评论翻页请求的还原度。
+  - B站评论 JSON 解析。
+  - B站视频页 `aid/oid` 元数据提取，并基于数字 `oid` 请求评论接口。
+  - B站评论接口分页 offset 解析，默认最多采集前 3 页并去重。
+  - B站二级评论根评论识别，默认抓取前 5 个有回复的根评论楼中楼并去重。
+  - B站评论接口错误码识别：风控、权限、接口异常会作为采集失败原因返回，不再伪装为示例评论。
+  - B站风控错误返回可操作建议：稍后重试、完成登录、降低采集频率。
+  - B站评论接口可恢复错误自动重试：限流、繁忙、超时、服务端错误会按平台限流策略重试；风控/验证码类错误不盲目重试，直接提示登录/验证和降频。
+  - B站评论接口支持从视频页提取 `wbi_img` key，并在可用时为评论主接口和楼中楼接口补 `wts/w_rid` WBI 签名参数；无法提取 key 时保持无签名降级路径。
+  - B站接口错误码恢复建议细化：`-101` 映射登录必需，`-352/-412` 映射验证码/风控，`-509` 映射限流，`403/-403` 映射权限，并同步到任务中心恢复动作。
+  - B站限流频率自适应：`-509/429` 等频率错误会使用更长退避间隔，服务端错误也会适度放大重试间隔；显式配置 0 延迟时保留测试/开发快速路径。
+  - B站登录态校验：通过 `x/web-interface/nav` 检查独立 Profile 的登录状态，并在平台状态中显示是否已登录。
+  - 搜索/采集执行器复用平台独立 Profile：登录窗口保存的状态会被后续 Playwright 搜索、状态检查和评论采集使用。
+  - 平台 JSON/API 请求执行器复用 Playwright 持久化上下文：`fetchText` 改为通过 context request 发起请求，继承平台独立 Profile 的 cookie/storage，避免页面内 `fetch` 对登录态、来源头和风控请求头的限制影响评论翻页。
+  - 通用平台登录状态检查：小红书、抖音/TikTok、Instagram、微博、知乎、快手等 Search Adapter 会访问平台登录页/首页，记录延迟，并基于头像/账户菜单/退出登录等明确登录信号与登录入口信号判断已登录、需登录或网络异常。
+  - B站作为可选登录平台显示登录入口：即使无需登录也可主动登录，以提升评论采集稳定性。
+  - 评论事件流与入库闭环。
+  - 评论自动生成 AI 线索、评分和建议动作。
+- UI 工作台：
+  - 平台状态。
+  - 平台状态展示增强：启动自动检查后按已登录、需登录/可登录、不可用三类徽标展示；延迟为 `0ms` 时也会正常显示，并在网络异常时使用红色状态提示。
+  - 平台选择。
+  - AI 关键词计划。
+  - 搜索并入库。
+  - 搜索结果展示。
+  - 采集评论按钮。
+  - 最新评论展示。
+  - 线索中心真实数据展示。
+  - 评论重新分析生成线索。
+  - 线索按状态和关键词筛选。
+  - 线索状态标记：待跟进、已联系、已忽略。
+  - 线索多选与批量状态更新。
+  - 线索详情面板、跟进备注、下次跟进时间。
+  - 线索高级详情页：打开线索时关联展示原评论上下文、原内容标题和来源链接。
+  - 跟进提醒面板：按逾期、今日、未来 7 天近期跟进分类展示，并可直接打开线索详情。
+  - 桌面端系统通知：刷新出逾期或今日跟进线索时弹出系统通知，同一批提醒在本会话内不重复打扰。
+  - 跟进日历导出：可将未来跟进提醒导出为标准 `.ics` 文件，导入 Outlook、Google Calendar 或系统日历。
+  - 侧边导航按模块切换视图，避免所有面板堆叠在单一页面。
+  - 线索详情支持清空下次跟进时间，并同步移出跟进提醒。
+  - 平台选择只在首次加载时填充默认项，用户可主动取消全部平台；搜索时会提示至少选择一个平台。
+  - AI 关键词扩展、平台登录、搜索失败路径均会在界面提示错误。
+  - 线索 CSV 导出，导出前经过字段校验和脱敏策略。
+  - 桌面端线索 CSV 导出接入系统保存对话框，用户可选择保存位置；浏览器预览环境保留 Blob 下载降级。
+- 登录能力：
+  - 平台独立 Profile 路径。
+  - Playwright 持久化登录窗口骨架。
+  - 登录后状态复查：平台登录窗口关闭后立即调用该平台状态检查，保存最新登录态和延迟，并返回给桌面端用于即时刷新。
+- 运营审计：
+  - 线索状态变更写入审计日志。
+  - 线索详情更新和批量状态更新写入审计日志。
+  - 线索导出写入审计日志。
+  - 跨平台搜索支持局部失败隔离：单个平台失败时保留其它平台结果，并写入部分失败审计。
+  - 评论采集与 AI 分析解耦：单条评论 AI 分析失败不会中断评论入库和采集任务。
+  - 平台状态检查支持局部失败隔离：单个平台状态异常会保存为不可用状态，不影响其它平台状态展示。
+  - 评论采集失败写入 `collect.failed` 审计日志。
+  - 平台登录完成/失败写入 `platform.login.completed/platform.login.failed` 审计日志，并记录登录后状态复查结果。
+  - 评论采集任务按错误语义分类：风控/验证码为 `captcha_required`，限流为 `rate_limited`，权限为 `permission_denied`，登录为 `login_required`。
+  - 不支持采集类任务分类：评论关闭等不可采集场景会标记为 `unsupported`，任务中心展示更准确的恢复建议。
+  - 错误分类优先级修复：当平台提示同时包含“评论关闭/不可采集”和“登录”语义时，优先标记为 `unsupported`，避免任务中心错误地引导用户登录重试。
+  - 任务中心展示失败原因、恢复建议，并对采集失败任务提供登录/验证与重试采集入口。
+  - 主链路协同回归：新增端到端测试覆盖平台 Adapter 评论采集、内容入库、评论入库、AI 线索生成、任务完成、导出字段过滤和导出审计，确保核心模块组合行为可验证。
+- AI 能力：
+  - 本地规则回退模型继续可用。
+  - DeepSeek、OpenAI、通义千问、自定义兼容接口的 Provider 配置骨架。
+  - OpenAI 兼容 Chat Completions 调用客户端。
+  - 购买意向分析提示词模板和模型 JSON 输出归一化。
+  - 评论分析优先使用已启用模型，未配置、调用失败或本地规则模式时自动回退。
+  - 批量评论分析队列，支持逐条执行、失败重试和节流配置。
+  - 最近一次 AI 分析统计：模型调用数、规则回退数、估算 tokens、按模型价格表估算成本。
+  - AI 调用失败分类：缺少密钥、认证失败、限流、服务端错误、网络错误、返回格式错误。
+  - AI 队列重试策略：仅对限流、服务端错误、网络错误等可恢复失败重试。
+  - AI 失败处理策略可视化配置：最大重试、重试延迟、请求间隔、连续失败熔断阈值。
+  - AI 失败处理策略预设：均衡、保守、快速、离线优先，可在桌面端一键应用。
+  - AI 批量分析熔断状态展示，连续失败后停止继续调用模型。
+  - AI 熔断恢复建议：根据最近一次分析统计输出正常、失败项、已熔断三类恢复动作。
+  - AI 恢复建议联动任务中心：AI 失败或熔断时，任务中心会显示恢复建议和推荐策略入口。
+  - AI 自动降级建议：限流/服务端错误推荐保守策略，熔断后推荐离线优先策略，可一键应用。
+  - AI 熔断/失败系统通知：最近一次 AI 恢复建议达到 warning 或 critical 时触发桌面通知，同一建议本会话内去重。
+  - 线索评分解释：基础分、关键词加分、互动加分和模型/规则原因。
+  - 内置首批模型价格表：DeepSeek、OpenAI、通义千问常见模型。
+  - 模型价格表可通过桌面端 AI 设置面板查看，并显示当前模型是否匹配价格表。
+  - 自定义模型价格表：支持在桌面端按 Provider 和模型正则追加价格，优先覆盖内置价格，并持久化到 `app_settings`。
+  - AI 批量分析成本估算已接入自定义价格表，统计结果会按当前匹配价格计算。
+  - API Key 写入后不通过 IPC/UI 明文回显，仅显示已配置状态和尾号预览。
+  - AI 密钥存储支持可插拔编解码器；Electron 桌面端优先使用 `safeStorage` 系统加密。
+  - 兼容读取旧明文密钥，重新保存后会进入当前编解码策略。
+  - AI Provider 列表展示密钥存储状态：系统加密、明文降级、旧明文、无密钥。
+  - AI 密钥一键迁移：支持单个 Provider 或全部 Provider 按当前编解码策略重新保存。
+  - AI 密钥健康检查与轮换提醒：按未配置 Key、非加密存储、保存超过 90 天等规则输出 ok/warning/critical 建议，并在桌面端 AI 设置中展示。
+  - AI 密钥迁移前备份与恢复：迁移前自动保存 Provider 配置和原始密钥存储串到专用备份表，不解密、不回显；支持按备份 ID 恢复并写入审计日志。
+  - AI 外部密钥引用：Provider API Key 支持填写 `env:VAR_NAME`，仓库仅保存环境变量引用，运行时从当前进程环境变量读取真实密钥；健康检查会区分引用可用与环境变量缺失。
+  - 保存模型配置写入审计日志。
+
+## 当前降级策略
+
+- 搜索页抓取优先使用 Playwright。
+- 搜索引擎或平台阻断时，Adapter 会回退到确定性结果，保证任务、入库和 UI 链路可验证。
+- 跨平台搜索中某个平台抛错时，系统保留其它平台结果；若全部失败则任务标记为失败并返回错误。
+- 评论采集优先解析真实页面/接口返回的评论数据。
+- 评论数据不可解析时，视频 Adapter 会回退到示例评论事件流，确保采集任务闭环不断。
+- B站评论接口返回风控、限流或权限错误时不会回退到示例评论，避免把失败伪装为有效采集结果。
+- 评论入库优先于 AI 分析；AI 单条分析失败时写审计日志，不阻断采集任务完成。
+
+## 最近验证
+
+- 2026-05-19：`npm test` 通过，112/112。
+- 2026-05-19：`python -m compileall -q .` 通过。
+- 2026-05-19：`python -m unittest discover -s tests` 通过，15/15。
+- 2026-05-19：`npm run build` 通过。
+- 2026-05-19：`npm run package` 通过，生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
+- 2026-05-19：`npm audit --omit=dev` 通过，0 vulnerabilities。
+- 2026-05-19：最近完整打包轮次执行 `npm test`、`npm run build`、`npm audit --omit=dev`、`npm run package` 通过；当前 shell 未提供 `python`/`py`/`python3` 命令入口，旧 Python 验证需在安装 Python 或恢复 PATH 后再次执行。
+- 2026-05-19：本轮按要求未打包，补齐通用平台内容链接解析基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐通用平台内容详情标题补全基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐通用平台评论采集基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 Reddit 专用 JSON 评论采集基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 Reddit 更多评论扩展和限流/权限异常语义；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 Reddit 评论排序策略和平台权限失败分类修复；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐小红书页面内嵌评论解析基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐小红书分页线索识别和登录/风控/限流异常语义；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐小红书机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok 短视频评论解析和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 Instagram 页面内嵌评论解析和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐微博页面内嵌评论解析、翻页线索和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐知乎页面内嵌评论解析、翻页线索和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，细化 Reddit JSON 接口错误分类和 morechildren 展开失败恢复提示；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐知乎 `paging.next` 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐微博 `max_id/cursor` 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，增强小红书评论翻页请求的 `xsec_token/xsec_source` 透传和 Web JSON 请求头；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 Instagram `end_cursor` 机会型 Web GraphQL 评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok cursor 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok 评论翻页请求的已有风控参数透传入口；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，完成主链路模块协同回归测试，覆盖 Adapter、内容/评论持久化、AI 线索、任务和导出审计；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，增强 YouTube continuation 登录态上下文请求头和请求体；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，扩展 YouTube continuation token 提取形态；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，将平台 JSON/API 请求切换为 Playwright context request，提升登录态 cookie/storage 复用稳定性；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，加固 YouTube 登录状态识别，覆盖已登录页面残留登录文案和匿名 topbar 两类误判；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐快手页面内嵌评论解析、`pcursor` 机会型 GraphQL 翻页请求和登录/风控/限流异常语义；执行 `npm test` 通过 108/108，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐通用 Search Adapter 登录状态和延迟检查，覆盖已登录、需登录和网络异常状态；执行 `npm test` 通过 109/109，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，优化桌面端平台状态展示，区分已登录/需登录/不可用，修复 `0ms` 延迟不显示，并同步浏览器预览 fallback 状态文案；执行 `npm test` 通过 109/109，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐平台登录后状态复查、状态持久化和登录审计；桌面端登录返回后可立即拿到最新平台状态；执行 `npm test` 通过 110/110，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，新增 AI 密钥健康检查和轮换提醒面板，覆盖未配置、需迁移、超过 90 天建议轮换和正常状态；执行 `npm test` 通过 111/111，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，新增 AI 密钥迁移前备份表、迁移前自动备份、备份列表和按备份 ID 恢复能力；执行 `npm test` 通过 112/112，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，新增 AI Provider 环境变量密钥引用 `env:VAR_NAME`，避免仓库落真实 API Key，并补齐健康检查缺失环境变量告警；执行 `npm test` 通过 113/113，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，增强 YouTube 评论解析，支持新版 `commentViewModel/commentEntityPayload` 登录态页面结构；执行 `npm test` 通过 114/114，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 YouTube 评论阻断页/接口异常语义，登录、验证码、限流、权限、评论关闭时不再生成示例评论；执行 `npm test` 通过 115/115，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐评论关闭等不可采集场景的 `unsupported` 任务分类和桌面端恢复建议；执行 `npm test` 通过 116/116，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 YouTube/B站视频链接解析时的页面元标题补全，优先使用 `og:title/twitter:title/title`；执行 `npm test` 通过 117/117，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，收紧 YouTube/B站视频链接解析的 host-only 校验，拒绝 path/query 伪造平台域名；执行 `npm test` 通过 118/118，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，增强 YouTube/B站结构化页面状态标题解析，支持 `videoDetails.title/videoData.title`；执行 `npm test` 通过 119/119，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，新增 YouTube/B站视频页 HTML 短缓存，复用 `parseContent` 抓取结果服务紧随其后的评论采集；执行 `npm test` 通过 120/120，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐通用平台内容页结构化状态标题解析，覆盖小红书 `note.title` 与抖音 `aweme_detail.desc` 等 meta 缺失场景；执行 `npm test` 通过 121/121，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，补齐 TikTok、Instagram、微博、知乎、快手、Reddit 结构化标题回归覆盖；执行 `npm test` 通过 122/122，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：本轮按要求未打包，回顾平台适配器、任务流、持久化、AI 与 UI 状态协同，修复评论关闭与登录混合提示的错误分类优先级；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev` 通过。
+- 2026-05-19：发布前清理隐私痕迹并确认 `dist/`、`release/`、`node_modules/`、本地日志均被忽略；执行 `npm test` 通过 123/123，`npm audit --omit=dev` 通过，`npm run package` 通过并生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
+- 2026-05-19：尝试启用 `asar` 并为 Playwright 配置 `asarUnpack`，但 electron-builder 26.8.1 + Electron 42.1.0 在 Windows 注入 asar integrity 资源时写入 `Lead Miner Workbench.exe` 失败；为保持可交付安装包，当前保留 `asar: false`，后续需升级/调整打包链路后再恢复。
+
+## 尚未完成
+
+- YouTube 登录态下更完整的评论抓取：已补强 continuation 请求上下文，仍需继续扩展更多登录态可见评论入口和真实页面差异样本。
+- 抖音、TikTok、Instagram、微博、知乎、快手等平台深度 Adapter：登录态搜索、内容详情补全、评论采集和平台专用 DOM/API 适配；抖音/TikTok、Instagram、微博、知乎、小红书、快手仍需扩展更多真实接口入口和完整风控签名参数。
+- 专用 Key Vault / 系统凭据管理与团队级权限策略。
+- 代码签名、asar 恢复和发布配置完善。
+
+## 下一步计划
+
+1. 完善 YouTube 评论采集：登录态可见评论专项优化。
+2. 继续增强抖音/TikTok、Instagram、微博、知乎、小红书、快手真实接口翻页、签名/风控参数；按平台风险逐步补登录态搜索和内容详情补全。

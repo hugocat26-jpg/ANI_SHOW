@@ -1,0 +1,58 @@
+{
+  "name": "lead-miner-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI-powered multi-platform customer lead mining desktop workbench.",
+  "author": "Lead Miner Workbench Maintainers",
+  "main": "apps/desktop/dist/main/index.js",
+  "build": {
+    "appId": "com.leadminer.workbench",
+    "productName": "Lead Miner Workbench",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "icon": "resources/icon.ico",
+    "files": [
+      "apps/desktop/dist/**/*",
+      "package.json"
+    ],
+    "asar": false,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/**/*.test.ts",
+    "check:core": "node --test tests/**/*.test.ts",
+    "dev": "vite --config vite.config.mjs --host 127.0.0.1",
+    "build": "tsc -b && node scripts/build-main.mjs && vite build --config vite.config.mjs",
+    "electron": "electron .",
+    "package": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  }
+}

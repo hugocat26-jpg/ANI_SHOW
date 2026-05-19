@@ -82,12 +82,25 @@ class LinkParser:
         results = []
         total = len(urls)
         for i, url in enumerate(urls, 1):
-            url = url.strip()
+            url = str(url or "").strip()
             if not url:
                 continue
             self.logger.info(f"正在解析第{i}条链接，共{total}条")
-            result = self.parse(url)
+            try:
+                result = self.parse(url)
+            except Exception as e:
+                result = {
+                    "url": url,
+                    "platform": "",
+                    "platform_name": "",
+                    "content_type": "",
+                    "content_id": "",
+                    "task_id": "",
+                    "is_valid": False,
+                    "error": f"解析异常: {str(e)[:120]}",
+                }
+                self.logger.error(f"链接解析异常: {url} - {str(e)[:120]}")
             results.append(result)
-        success_count = sum(1 for r in results if r["is_valid"])
+        success_count = sum(1 for r in results if r and r.get("is_valid"))
         self.logger.success(f"链接解析完成: 总计{len(results)}条, 成功{success_count}条")
         return results

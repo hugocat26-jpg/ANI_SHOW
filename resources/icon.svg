@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Lead Miner Workbench icon">
+  <defs>
+    <linearGradient id="background" x1="32" y1="16" x2="224" y2="240" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="70" y1="54" x2="154" y2="154" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ECFEFF"/>
+      <stop offset="1" stop-color="#BFDBFE"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#background)"/>
+  <circle cx="106" cy="104" r="52" fill="url(#lens)" stroke="#F8FAFC" stroke-width="12"/>
+  <path d="M145 143 L198 196" stroke="#F8FAFC" stroke-width="22" stroke-linecap="round"/>
+  <path d="M78 101 L99 122 L136 82" fill="none" stroke="#0F766E" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="184" cy="70" r="14" fill="#FACC15"/>
+  <circle cx="203" cy="105" r="8" fill="#A7F3D0"/>
+</svg>

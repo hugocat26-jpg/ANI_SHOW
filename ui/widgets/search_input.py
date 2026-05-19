@@ -44,7 +44,7 @@ class SearchInputWidget(QGroupBox):
     search_requested = pyqtSignal(str, list, str)   # keyword, platforms, content_type
     search_company = pyqtSignal(str)                 # company name
     add_urls = pyqtSignal(list)                      # 批量添加链接到链接输入区
-    platform_login_requested = pyqtSignal()
+    platform_login_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__("● 搜索发现", parent)
@@ -94,7 +94,7 @@ class SearchInputWidget(QGroupBox):
             }}
             QPushButton:hover {{ border-color: {_GOLD}; color: {_GOLD}; }}
         """)
-        self._login_btn.clicked.connect(self.platform_login_requested.emit)
+        self._login_btn.clicked.connect(lambda: self.platform_login_requested.emit(""))
         mode_layout.addWidget(self._login_btn)
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
@@ -182,6 +182,8 @@ class SearchInputWidget(QGroupBox):
         filter_row.addWidget(self._platform_chk)
 
         self._platform_checkboxes: dict[str, QCheckBox] = {}
+        self._platform_status_labels: dict[str, QLabel] = {}
+        self._platform_login_buttons: dict[str, QPushButton] = {}
         for key, name in PLATFORM_OPTIONS:
             cb = QCheckBox(name)
             cb.setChecked(key in CONTENT_TYPE_PLATFORMS["all"])
@@ -198,6 +200,44 @@ class SearchInputWidget(QGroupBox):
 
         filter_row.addStretch()
         layout.addLayout(filter_row)
+
+        status_grid = QHBoxLayout()
+        status_grid.setSpacing(8)
+        for key, name in PLATFORM_OPTIONS:
+            if key == "web":
+                continue
+            item = QWidget()
+            item_layout = QHBoxLayout(item)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(4)
+
+            label = QLabel(f"{name}: 检查中")
+            label.setStyleSheet(f"color: {_MUTED}; font-size: 10px;")
+            self._platform_status_labels[key] = label
+            item_layout.addWidget(label)
+
+            login_btn = QPushButton("登录")
+            login_btn.setFixedWidth(42)
+            login_btn.setStyleSheet(f"""
+                QPushButton {{
+                    border: 1px solid {_CARD_BORDER};
+                    border-radius: 5px;
+                    padding: 0 6px;
+                    min-height: 20px;
+                    background-color: transparent;
+                    color: {_GOLD};
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{ border-color: {_GOLD}; background-color: {_CARD_BG}; }}
+            """)
+            login_btn.clicked.connect(lambda checked=False, p=key: self.platform_login_requested.emit(p))
+            login_btn.setVisible(False)
+            self._platform_login_buttons[key] = login_btn
+            item_layout.addWidget(login_btn)
+            status_grid.addWidget(item)
+
+        status_grid.addStretch()
+        layout.addLayout(status_grid)
 
         # 状态提示
         self._status_label = QLabel("")
@@ -234,6 +274,10 @@ class SearchInputWidget(QGroupBox):
             self._platform_chk.setVisible(True)
             for cb in self._platform_checkboxes.values():
                 cb.setVisible(True)
+            for label in self._platform_status_labels.values():
+                label.setVisible(True)
+            for key, btn in self._platform_login_buttons.items():
+                btn.setVisible("未登录" in self._platform_status_labels[key].text())
         else:
             self._mode_label.setText("搜索模式: 公司信息")
             self._mode_toggle.setText("切换为内容搜索")
@@ -242,6 +286,10 @@ class SearchInputWidget(QGroupBox):
             self._platform_chk.setVisible(False)
             for cb in self._platform_checkboxes.values():
                 cb.setVisible(False)
+            for label in self._platform_status_labels.values():
+                label.setVisible(False)
+            for btn in self._platform_login_buttons.values():
+                btn.setVisible(False)
 
     def _on_search(self) -> None:
         """触发搜索"""
@@ -275,3 +323,28 @@ class SearchInputWidget(QGroupBox):
 
     def set_status(self, text: str) -> None:
         self._status_label.setText(text)
+
+    def set_platform_status(self, platform: str, status: dict) -> None:
+        label = self._platform_status_labels.get(platform)
+        if not label:
+            return
+        name = dict(PLATFORM_OPTIONS).get(platform, platform)
+        latency = status.get("latency_ms")
+        latency_text = f" {latency}ms" if latency is not None else ""
+        logged_in = bool(status.get("logged_in"))
+        available = bool(status.get("available"))
+        message = status.get("message") or ""
+
+        if available:
+            label.setText(f"{name}: ● 已登录{latency_text}" if platform in ("douyin", "xiaohongshu", "instagram", "facebook") else f"{name}: ● 可用{latency_text}")
+            label.setStyleSheet("color: #3FB950; font-size: 10px;")
+        elif platform in ("douyin", "xiaohongshu", "instagram", "facebook") and not logged_in:
+            label.setText(f"{name}: ● 未登录{latency_text}")
+            label.setStyleSheet("color: #D29922; font-size: 10px;")
+        else:
+            label.setText(f"{name}: ● 异常{latency_text}" + (f" {message}" if message else ""))
+            label.setStyleSheet("color: #F85149; font-size: 10px;")
+
+        btn = self._platform_login_buttons.get(platform)
+        if btn:
+            btn.setVisible(platform in ("douyin", "xiaohongshu", "instagram", "facebook") and not logged_in)

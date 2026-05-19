@@ -30,22 +30,9 @@ from .dialogs.compliance_dialog import ComplianceDialog
 from .dialogs.export_dialog import ExportDialog
 from .dialogs.search_results_dialog import SearchResultsDialog
 
-from config.settings import get_settings, AppSettings
-from core.link_parser import LinkParser
-from core.task_manager import TaskManager, TaskWorker
-from core.scraper.base import ScraperFactory
-from core.intent_recognizer import IntentRecognizer
-from core.info_extractor import InfoExtractor
-from core.data_exporter import DataExporter
-from llm.base import BaseLLM
-from llm.tongyi import TongyiLLM
-from llm.wenxin import WenxinLLM
-from llm.openai_llm import OpenAILLM
-from llm.deepseek import DeepseekLLM
-from llm.kimi import KimiLLM
-from storage.database import Database
+from core.app_services import ApplicationServices
+from core.task_manager import TaskWorker
 from storage.models import CollectTask
-from utils.logger import Logger
 
 
 # 卡片阴影
@@ -62,36 +49,33 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.settings = get_settings()
-        self.settings.load()
-        self.logger = Logger()
-        self.database = Database()
-        self.link_parser = LinkParser()
-
-        # LLM 初始化
-        self.llm: Optional[BaseLLM] = None
-        self._init_llm()
-
-        self.extractor = InfoExtractor(self.database)
-        self.recognizer = IntentRecognizer(self.llm)
-        self.exporter = DataExporter(self.database)
-
-        # 任务管理器（单浏览器串行 + 启动间隔，防止多 Edge 实例资源耗尽闪退）
-        self.task_manager = TaskManager(
-            ScraperFactory, self.recognizer, self.extractor, self.database,
+        # 统一应用服务装配层：UI 不再直接拼装 LLM、数据库、采集器和导出器。
+        # 桌面端保持单浏览器串行，降低批量解析时的资源峰值和闪退概率。
+        self.services = ApplicationServices.build(
             max_concurrent=1,
+            pending_callback=self._on_pending_task_started,
         )
-        # 排队任务启动回调
-        self.task_manager.set_pending_callback(self._on_pending_task_started)
+        self.settings = self.services.settings
+        self.logger = self.services.logger
+        self.database = self.services.database
+        self.link_parser = self.services.link_parser
+        self.llm = self.services.llm
+        self.ai_service = self.services.ai
+        self.extractor = self.services.extractor
+        self.recognizer = self.services.recognizer
+        self.exporter = self.services.exporter
+        self.task_manager = self.services.task_manager
 
         # 初始化UI
         self._search_results: list = []
         self._pending_search_request: Optional[tuple[str, list, str]] = None
         self._login_worker = None
+        self._platform_status_worker = None
         self._init_ui()
         self._init_tray()
         self._connect_signals()
         self._check_first_run()
+        QTimer.singleShot(800, self._refresh_platform_statuses)
 
     def _init_ui(self) -> None:
         """初始化界面 — Tab 切换 + 可拖拽调整卡片大小"""
@@ -355,41 +339,6 @@ class MainWindow(QMainWindow):
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self._on_tray_activated)
 
-    def _init_llm(self) -> None:
-        """初始化LLM实例"""
-        llm_config = self.settings.config.llm
-        try:
-            from utils.crypto import CryptoUtil
-            provider = llm_config.provider
-            if provider == "tongyi":
-                api_key = CryptoUtil.decrypt(llm_config.tongyi_api_key) if llm_config.tongyi_api_key else ""
-                if api_key:
-                    self.llm = TongyiLLM(api_key=api_key, model=llm_config.tongyi_model,
-                                         temperature=llm_config.temperature, max_tokens=llm_config.max_tokens)
-            elif provider == "wenxin":
-                api_key = CryptoUtil.decrypt(llm_config.wenxin_api_key) if llm_config.wenxin_api_key else ""
-                secret_key = CryptoUtil.decrypt(llm_config.wenxin_secret_key) if llm_config.wenxin_secret_key else ""
-                if api_key:
-                    self.llm = WenxinLLM(api_key=api_key, secret_key=secret_key, model=llm_config.wenxin_model,
-                                         temperature=llm_config.temperature, max_tokens=llm_config.max_tokens)
-            elif provider == "openai":
-                api_key = CryptoUtil.decrypt(llm_config.openai_api_key) if llm_config.openai_api_key else ""
-                if api_key:
-                    self.llm = OpenAILLM(api_key=api_key, model=llm_config.openai_model,
-                                         temperature=llm_config.temperature, max_tokens=llm_config.max_tokens)
-            elif provider == "deepseek":
-                api_key = CryptoUtil.decrypt(llm_config.deepseek_api_key) if llm_config.deepseek_api_key else ""
-                if api_key:
-                    self.llm = DeepseekLLM(api_key=api_key, model=llm_config.deepseek_model,
-                                           temperature=llm_config.temperature, max_tokens=llm_config.max_tokens)
-            elif provider == "kimi":
-                api_key = CryptoUtil.decrypt(llm_config.kimi_api_key) if llm_config.kimi_api_key else ""
-                if api_key:
-                    self.llm = KimiLLM(api_key=api_key, model=llm_config.kimi_model,
-                                       temperature=llm_config.temperature, max_tokens=llm_config.max_tokens)
-        except Exception as e:
-            self.logger.warning(f"LLM初始化失败: {str(e)}，将仅使用关键词识别")
-
     def _connect_signals(self) -> None:
         """连接信号槽"""
         self.operation_bar.start_clicked.connect(self._on_start)
@@ -567,8 +516,11 @@ class MainWindow(QMainWindow):
         self.search_log.append(f"✗ 搜索失败: {error}")
         QMessageBox.warning(self, "搜索错误", f"搜索失败:\n{error}")
 
-    def _on_platform_login(self) -> None:
+    def _on_platform_login(self, platform: str = "") -> None:
         """手动打开平台登录窗口。"""
+        if platform:
+            self._start_platform_login(platform)
+            return
         items = ["抖音", "小红书", "Instagram", "Facebook"]
         item, ok = QInputDialog.getItem(self, "平台登录", "选择需要登录的平台：", items, 0, False)
         if not ok or not item:
@@ -597,6 +549,7 @@ class MainWindow(QMainWindow):
         if success:
             self.search_log.append(f"✓ {message}")
             QMessageBox.information(self, "平台登录", message)
+            self._refresh_platform_statuses([platform])
             if self._pending_search_request:
                 keyword, platforms, content_type = self._pending_search_request
                 self._pending_search_request = None
@@ -605,6 +558,16 @@ class MainWindow(QMainWindow):
             self.search_log.append(f"✗ 登录失败: {message}")
             QMessageBox.warning(self, "平台登录失败", message)
             self.search_input.set_searching(False)
+
+    def _refresh_platform_statuses(self, platforms: Optional[list[str]] = None) -> None:
+        from core.searcher import PlatformStatusWorker
+
+        if self._platform_status_worker and self._platform_status_worker.isRunning():
+            return
+        self._platform_status_worker = PlatformStatusWorker(platforms)
+        self._platform_status_worker.status_checked.connect(self.search_input.set_platform_status)
+        self._platform_status_worker.log.connect(self._on_search_log)
+        self._platform_status_worker.start()
 
     def _toggle_search_results(self, checked: bool) -> None:
         """全选/取消全选搜索结果"""
@@ -656,7 +619,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请输入至少一条链接")
             return
 
-        results = self.link_parser.parse_batch(urls)
+        try:
+            results = self.link_parser.parse_batch(urls)
+        except Exception as e:
+            self.logger.error(f"批量解析异常: {str(e)[:120]}")
+            QMessageBox.warning(self, "解析失败", f"批量解析过程中出现异常:\n{str(e)[:200]}")
+            self.operation_bar.set_collecting_state(False)
+            return
         valid_results = [r for r in results if r["is_valid"]]
         failed_results = [r for r in results if not r["is_valid"]]
 
@@ -760,10 +729,11 @@ class MainWindow(QMainWindow):
 
     def _on_settings_changed(self) -> None:
         """设置变更后重新初始化相关模块"""
-        self._init_llm()
-        self.recognizer = IntentRecognizer(self.llm)
-        self.task_manager.recognizer = self.recognizer
-        self.settings.load()
+        self.services.reload_ai()
+        self.llm = self.services.llm
+        self.ai_service = self.services.ai
+        self.recognizer = self.services.recognizer
+        self.settings = self.services.settings
 
     def _on_task_progress(self, task_id: str, current: int, total: int, phase: str = "") -> None:
         self.progress_panel.update_task(task_id, current, total, phase)

@@ -15,7 +15,9 @@ import threading
 import tempfile
 import shutil
 import base64
+import html
 import xml.etree.ElementTree as ET
+import sqlite3
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
@@ -35,6 +37,20 @@ _PLATFORM_LOGIN_URLS = {
     "facebook": "https://zh-cn.facebook.com/",
 }
 LOGIN_REQUIRED_PLATFORMS = {"douyin", "xiaohongshu", "instagram", "facebook"}
+_PLATFORM_PING_URLS = {
+    "douyin": "https://www.douyin.com/",
+    "bilibili": "https://www.bilibili.com/",
+    "xiaohongshu": "https://www.xiaohongshu.com/",
+    "youtube": "https://www.youtube.com/",
+    "instagram": "https://www.instagram.com/",
+    "facebook": "https://zh-cn.facebook.com/",
+}
+_PLATFORM_COOKIE_DOMAINS = {
+    "douyin": ("douyin.com", "iesdouyin.com"),
+    "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+    "instagram": ("instagram.com",),
+    "facebook": ("facebook.com", "fb.com", "fb.watch"),
+}
 
 # ==================== 反检测脚本（与 BaseScraper 一致）====================
 
@@ -166,6 +182,30 @@ class PlatformLoginWorker(QThread):
             self.login_finished.emit(self.platform, False, str(e))
 
 
+class PlatformStatusWorker(QThread):
+    """后台检测平台访问延迟和登录状态。"""
+
+    status_checked = pyqtSignal(str, dict)
+    log = pyqtSignal(str, str)
+
+    def __init__(self, platforms: Optional[list[str]] = None):
+        super().__init__()
+        self.platforms = platforms or ["douyin", "bilibili", "xiaohongshu", "youtube", "instagram", "facebook"]
+
+    def run(self) -> None:
+        for platform in self.platforms:
+            try:
+                status = check_platform_status(platform)
+            except Exception as e:
+                status = {
+                    "available": False,
+                    "logged_in": False,
+                    "latency_ms": None,
+                    "message": str(e)[:80],
+                }
+            self.status_checked.emit(platform, status)
+
+
 def login_search_platform(platform: str, timeout_ms: int = 600000) -> None:
     """打开持久化搜索 Profile 让用户登录平台。"""
     from playwright.sync_api import sync_playwright
@@ -205,9 +245,62 @@ def login_search_platform(platform: str, timeout_ms: int = 600000) -> None:
 
 
 def has_search_login_state() -> bool:
-    return (_SEARCH_PROFILE_DIR / "Default" / "Preferences").exists() or (
-        _SEARCH_PROFILE_DIR / "Default" / "Cookies"
-    ).exists()
+    return _profile_has_state(_SEARCH_PROFILE_DIR)
+
+
+def check_platform_status(platform: str) -> dict:
+    """检测平台可访问性、登录态和近似 HTTP 延迟。"""
+    latency_ms: Optional[int] = None
+    available = False
+    message = ""
+
+    url = _PLATFORM_PING_URLS.get(platform)
+    if url:
+        try:
+            import requests
+
+            start = time.perf_counter()
+            response = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+                allow_redirects=True,
+                stream=True,
+            )
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            available = response.status_code < 500
+            if not available:
+                message = f"HTTP {response.status_code}"
+            response.close()
+        except Exception as e:
+            message = str(e)[:80]
+
+    if platform in LOGIN_REQUIRED_PLATFORMS:
+        logged_in = _platform_has_login_state(platform)
+        if available and logged_in:
+            message = "已登录"
+        elif available:
+            message = "未登录"
+        return {
+            "available": available and logged_in,
+            "logged_in": logged_in,
+            "latency_ms": latency_ms,
+            "message": message,
+        }
+
+    return {
+        "available": available,
+        "logged_in": True,
+        "latency_ms": latency_ms,
+        "message": message or "可用",
+    }
+
+
+def _platform_has_login_state(platform: str) -> bool:
+    profiles = [_SEARCH_PROFILE_DIR]
+    if platform == "douyin":
+        profiles.append(Path.home() / ".client_lead_miner" / "douyin_profile")
+    return any(_profile_has_domain_state(profile, platform) for profile in profiles)
 
 
 class PlatformSearcher:
@@ -263,7 +356,7 @@ class PlatformSearcher:
         except Exception:
             return ""
 
-    def _make_result(self, url: str, title: str, platform_name: str = "") -> Optional[SearchResult]:
+    def _make_result(self, url: str, title: str, platform_name: str = "", snippet: str = "") -> Optional[SearchResult]:
         normalized = _normalize_result_url(url)
         if not normalized:
             return None
@@ -272,14 +365,49 @@ class PlatformSearcher:
         if platform == "web":
             return None
 
+        clean_title = _best_search_result_title(title, snippet, normalized, platform_name or guessed_name)
+        clean_snippet = _clean_result_text(snippet or title, clean_title)
         return SearchResult(
             url=normalized,
-            title=(title or normalized)[:100],
+            title=clean_title[:100],
             platform=platform,
             platform_name=platform_name or guessed_name,
             content_type=_content_type_for_platform(platform),
-            snippet=(title or "")[:120],
+            snippet=clean_snippet[:120],
         )
+
+    def _extract_link_title(self, element, fallback: str = "") -> str:
+        """从链接或其卡片上下文中提取更像标题的文本。"""
+        try:
+            candidates = element.evaluate(
+                """el => {
+                    const pick = node => node ? (
+                        node.getAttribute('title') ||
+                        node.getAttribute('aria-label') ||
+                        node.textContent ||
+                        ''
+                    ) : '';
+                    const card = el.closest(
+                        '.bili-video-card, .video-list-item, .video-item, .search-card, .note-item, section, article, li'
+                    );
+                    return [
+                        el.getAttribute('title') || '',
+                        el.getAttribute('aria-label') || '',
+                        pick(el.querySelector('[title]')),
+                        pick(card && card.querySelector('[title]')),
+                        pick(card && card.querySelector('.bili-video-card__info--tit')),
+                        pick(card && card.querySelector('.title, .desc, .footer, h3, h2')),
+                        el.textContent || '',
+                    ];
+                }"""
+            )
+            for text in candidates or []:
+                cleaned = _clean_result_text(text, "")
+                if _looks_like_content_title(cleaned):
+                    return cleaned
+        except Exception:
+            pass
+        return _clean_result_text(fallback, "")
 
     # ==================== 抖音搜索 ====================
 
@@ -344,7 +472,7 @@ class PlatformSearcher:
                     if href in seen_urls:
                         continue
                     seen_urls.add(href)
-                    title = (link.inner_text() or keyword).strip()[:100]
+                    title = self._extract_link_title(link, keyword)[:100]
 
                     results.append(SearchResult(
                         url=href, title=title,
@@ -377,7 +505,7 @@ class PlatformSearcher:
                 time.sleep(1.0)
 
             seen_urls: set[str] = set()
-            items = self._page.query_selector_all('a[href*="/video/"]')
+            items = self._page.query_selector_all('a[href*="/video/BV"], a[href*="//www.bilibili.com/video/BV"]')
 
             for item in items:
                 if len(results) >= max_results:
@@ -391,7 +519,7 @@ class PlatformSearcher:
                     if href in seen_urls:
                         continue
                     seen_urls.add(href)
-                    title = (item.inner_text() or keyword).strip()[:100]
+                    title = self._extract_link_title(item, keyword)[:100]
 
                     results.append(SearchResult(
                         url=href, title=title,
@@ -439,7 +567,7 @@ class PlatformSearcher:
                     if href in seen_urls:
                         continue
                     seen_urls.add(href)
-                    title = (item.inner_text() or keyword).strip()[:100]
+                    title = self._extract_link_title(item, keyword)[:100]
 
                     results.append(SearchResult(
                         url=href, title=title,
@@ -668,14 +796,16 @@ class PlatformSearcher:
                         continue
                     seen_urls.add(href)
 
-                    title = link_el.inner_text().strip()
+                    title = _clean_result_text(link_el.inner_text(), href)
+                    snippet = _clean_result_text(item.inner_text() if self._element_tag_name(item) != 'a' else title, title)
                     platform, platform_name = _guess_platform_from_url(href)
+                    best_title = _best_search_result_title(title, snippet, href, platform_name)
 
                     results.append(SearchResult(
-                        url=href, title=title[:100],
+                        url=href, title=best_title[:100],
                         platform=platform, platform_name=platform_name,
                         content_type=_content_type_for_platform(platform),
-                        snippet=title[:120],
+                        snippet=snippet[:120],
                     ))
                 except Exception:
                     continue
@@ -771,8 +901,9 @@ class PlatformSearcher:
                             continue
                         seen_urls.add(href)
 
-                        title = link_el.inner_text().strip()
-                        result = self._make_result(href, title, platform_name)
+                        title = _clean_result_text(link_el.inner_text(), href)
+                        snippet = _clean_result_text(item.inner_text() if self._element_tag_name(item) != 'a' else title, title)
+                        result = self._make_result(href, title, platform_name, snippet)
                         if result:
                             results.append(result)
                     except Exception:
@@ -819,8 +950,10 @@ class PlatformSearcher:
                         continue
                     seen_urls.add(href)
 
-                    title = item.findtext("title") or href
-                    snippet = item.findtext("description") or title
+                    raw_title = item.findtext("title") or ""
+                    raw_snippet = item.findtext("description") or ""
+                    title = _best_search_result_title(raw_title, raw_snippet, href, platform_name)
+                    snippet = _clean_result_text(raw_snippet, title)
                     results.append(SearchResult(
                         url=href,
                         title=title[:100],
@@ -860,8 +993,8 @@ class PlatformSearcher:
                             continue
                         seen_urls.add(href)
 
-                        title = item.inner_text().strip()
-                        result = self._make_result(href, title, platform_name)
+                        title = _clean_result_text(item.inner_text(), href)
+                        result = self._make_result(href, title, platform_name, title)
                         if result:
                             results.append(result)
                     except Exception:
@@ -901,14 +1034,16 @@ class PlatformSearcher:
                         continue
                     seen_urls.add(href)
 
-                    title = link_el.inner_text().strip()
+                    title = _clean_result_text(link_el.inner_text(), href)
+                    snippet = _clean_result_text(item.inner_text() if self._element_tag_name(item) != 'a' else title, title)
                     plat, pname = _guess_platform_from_url(href)
+                    best_title = _best_search_result_title(title, snippet, href, pname)
 
                     results.append(SearchResult(
-                        url=href, title=title[:100],
+                        url=href, title=best_title[:100],
                         platform=plat, platform_name=pname,
                         content_type=_content_type_for_platform(plat),
-                        snippet=title[:120],
+                        snippet=snippet[:120],
                     ))
                 except Exception:
                     continue
@@ -917,6 +1052,79 @@ class PlatformSearcher:
         except Exception as e:
             self.logger.warning(f"Bing宽泛失败: {str(e)[:80]}")
         return results
+
+
+_GENERIC_RESULT_TITLES = {
+    "抖音", "小红书", "bilibili", "哔哩哔哩", "b站", "instagram", "facebook", "视频",
+}
+
+
+def _clean_result_text(text: str, fallback: str = "") -> str:
+    """清理搜索结果里的 HTML、平台后缀和统计噪声。"""
+    value = html.unescape(str(text or ""))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s*[-_｜|]\s*(抖音|小红书|哔哩哔哩|bilibili|B站)\s*$", "", value, flags=re.I)
+    value = value.rstrip("。.!！?？")
+    return value or fallback
+
+
+def _looks_like_content_title(text: str) -> bool:
+    value = _clean_result_text(text, "")
+    if len(value) < 2:
+        return False
+    if re.match(r"^(抖音|小红书|bilibili|哔哩哔哩|b站)\s+https?://", value, flags=re.I):
+        return False
+    if re.match(r"^(抖音|小红书|bilibili|哔哩哔哩|b站)\s+\S+\s+›", value, flags=re.I):
+        return False
+    if re.match(r"^(douyin\.com|xiaohongshu\.com|bilibili\.com)\s+https?://", value, flags=re.I):
+        return False
+    if value.lower() in _GENERIC_RESULT_TITLES:
+        return False
+    if "we would like to show you a description here" in value.lower():
+        return False
+    if re.fullmatch(r"[\d\s.:：万wW播放点赞收藏弹幕]+", value):
+        return False
+    if re.fullmatch(r"(?:\d+(?:\.\d+)?万?\s*){1,4}", value):
+        return False
+    return True
+
+
+def _strip_search_breadcrumb(text: str) -> str:
+    value = _clean_result_text(text, "")
+    value = re.sub(
+        r"^(?:抖音|小红书|bilibili|哔哩哔哩|B站|douyin\.com|xiaohongshu\.com|bilibili\.com)\s+"
+        r"https?://\S+\s+›\s+\S+\s*",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"^(?:抖音|小红书|douyin\.com|xiaohongshu\.com)\s+", "", value, flags=re.I)
+    return _clean_result_text(value, "")
+
+
+def _best_search_result_title(raw_title: str, raw_snippet: str, url: str, platform_name: str) -> str:
+    title = _clean_result_text(raw_title, "")
+    stripped_title = _strip_search_breadcrumb(title)
+    if _looks_like_content_title(stripped_title):
+        return stripped_title[:100]
+    if _looks_like_content_title(title):
+        return title
+
+    snippet = _clean_result_text(raw_snippet, "")
+    if snippet:
+        stripped_snippet = _strip_search_breadcrumb(snippet)
+        candidates = re.split(r"[\r\n]+|(?<=。)|(?<=？)|(?<=\?)", stripped_snippet)
+        candidates.append(stripped_snippet)
+        candidates.extend(re.split(r"\s{2,}", snippet))
+        for candidate in candidates:
+            candidate = _clean_result_text(candidate, "")
+            if _looks_like_content_title(candidate):
+                return candidate[:100]
+        if _looks_like_content_title(snippet):
+            return snippet[:100]
+
+    return _clean_result_text(title, "") or platform_name or url
 
 
 def _host_matches(hostname: str, domains: tuple[str, ...]) -> bool:
@@ -1044,14 +1252,57 @@ def _platform_site_queries(keyword: str, platform: str, site: str, platform_name
 
 def _search_profile_seed(platforms: list[str]) -> Optional[Path]:
     """搜索也复用已保存登录态的副本，避免直搜平台反复要求验证。"""
+    profile_dir = Path.home() / ".client_lead_miner" / "douyin_profile"
+    if "douyin" in platforms and _profile_has_state(profile_dir) and not (_SEARCH_PROFILE_DIR / "Default" / "Cookies").exists():
+        return profile_dir
     if has_search_login_state():
         return _SEARCH_PROFILE_DIR
-    if "douyin" not in platforms:
-        return None
-    profile_dir = Path.home() / ".client_lead_miner" / "douyin_profile"
-    if (profile_dir / "Default" / "Preferences").exists() or (profile_dir / "Default" / "Cookies").exists():
-        return profile_dir
     return None
+
+
+def _profile_has_state(profile_dir: Path) -> bool:
+    default_dir = profile_dir / "Default"
+    if (default_dir / "Cookies").exists():
+        return True
+    local_storage = default_dir / "Local Storage"
+    try:
+        return local_storage.exists() and any(local_storage.rglob("*"))
+    except Exception:
+        return False
+
+
+def _profile_has_domain_state(profile_dir: Path, platform: str) -> bool:
+    domains = _PLATFORM_COOKIE_DOMAINS.get(platform, ())
+    default_dir = profile_dir / "Default"
+    if not domains or not default_dir.exists():
+        return False
+
+    cookies_db = default_dir / "Cookies"
+    if cookies_db.exists():
+        uri = cookies_db.as_posix().replace("'", "''")
+        try:
+            conn = sqlite3.connect(f"file:{uri}?mode=ro", uri=True, timeout=1)
+            try:
+                rows = conn.execute("SELECT host_key FROM cookies LIMIT 500").fetchall()
+                for (host_key,) in rows:
+                    host = (host_key or "").lstrip(".").lower()
+                    if any(host == domain or host.endswith(f".{domain}") for domain in domains):
+                        return True
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    local_storage = default_dir / "Local Storage"
+    if local_storage.exists():
+        try:
+            for path in local_storage.rglob("*"):
+                name = path.name.lower()
+                if any(domain.replace(".", "_") in name or domain in name for domain in domains):
+                    return True
+        except Exception:
+            pass
+    return False
 
 
 def _search_headless(platforms: list[str], settings=None) -> bool:

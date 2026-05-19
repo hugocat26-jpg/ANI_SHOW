@@ -1,0 +1,292 @@
+export type PlatformCategory = 'search_engine' | 'video' | 'social' | 'forum' | 'ecommerce'
+
+export type PlatformCapability =
+  | 'search'
+  | 'login'
+  | 'status'
+  | 'parse_content'
+  | 'comments'
+  | 'author'
+  | 'hashtag_search'
+
+export type PlatformErrorCode =
+  | 'ok'
+  | 'login_required'
+  | 'captcha_required'
+  | 'rate_limited'
+  | 'network_error'
+  | 'selector_changed'
+  | 'no_results'
+  | 'content_not_found'
+  | 'permission_denied'
+  | 'unsupported'
+
+export type TaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped'
+
+export type TaskType =
+  | 'check_platform_status'
+  | 'login_platform'
+  | 'search'
+  | 'parse_content'
+  | 'collect_comments'
+  | 'analyze_leads'
+  | 'export'
+
+export type IntentLevel = 'high' | 'medium' | 'low' | 'none'
+
+export interface RateLimitPolicy {
+  concurrency: number
+  minDelayMs: number
+  maxRetries: number
+}
+
+export interface PlatformSpec {
+  key: string
+  name: string
+  category: PlatformCategory
+  domains: string[]
+  loginUrl?: string
+  requiresLogin: boolean
+  capabilities: PlatformCapability[]
+  rateLimit: RateLimitPolicy
+}
+
+export interface PlatformStatus {
+  platformKey: string
+  available: boolean
+  loggedIn: boolean
+  latencyMs: number | null
+  checkedAt: string
+  errorCode: PlatformErrorCode
+  message: string
+}
+
+export interface SearchInput {
+  keyword: string
+  platformKeys: string[]
+  limit: number
+}
+
+export interface SearchResult {
+  id: string
+  platformKey: string
+  title: string
+  url: string
+  snippet: string
+  relevance: number
+  createdAt: string
+}
+
+export interface ContentRef {
+  platformKey: string
+  url: string
+  contentId: string
+  contentType: 'video' | 'image_text' | 'post' | 'unknown'
+  title?: string
+}
+
+export interface CommentRecord {
+  id: string
+  platformKey: string
+  contentId: string
+  contentUrl: string
+  nickname: string
+  text: string
+  likes: number
+  publishedAt: string
+  collectedAt: string
+}
+
+export interface KeywordPlan {
+  seed: string
+  keywords: string[]
+  locales: string[]
+}
+
+export interface CommentInput {
+  platformKey: string
+  contentUrl: string
+  nickname: string
+  text: string
+  likes: number
+}
+
+export interface IntentResult {
+  level: IntentLevel
+  confidence: number
+  keywords: string[]
+  reason: string
+}
+
+export interface LeadScore {
+  score: number
+  level: IntentLevel
+  reason: string
+  suggestedAction: string
+}
+
+export interface AIAnalysisContext {
+  provider: AIProviderPublicConfig
+  apiKey?: string
+}
+
+export interface AIAnalysisStats {
+  total: number
+  succeeded: number
+  failed: number
+  failuresByCode?: Record<string, number>
+  modelUsed: number
+  ruleFallback: number
+  circuitOpen: boolean
+  estimatedInputTokens: number
+  estimatedOutputTokens: number
+  estimatedCostUsd: number
+  startedAt: string
+  finishedAt?: string
+}
+
+export interface AIFailurePolicy {
+  maxRetries: number
+  retryDelayMs: number
+  minDelayMs: number
+  circuitBreakerThreshold: number
+  updatedAt: string
+}
+
+export interface LeadRecord {
+  id: string
+  commentId: string
+  platformKey: string
+  contentId: string
+  nickname: string
+  text: string
+  intentLevel: IntentLevel
+  confidence: number
+  keywords: string[]
+  score: number
+  scoreReason: string
+  suggestedAction: string
+  status: 'new' | 'contacted' | 'ignored'
+  note?: string
+  lastContactedAt?: string
+  nextFollowUpAt?: string
+  createdAt: string
+}
+
+export interface LeadDetail {
+  lead: LeadRecord
+  comment?: CommentRecord
+  content?: ContentRef
+}
+
+export interface LeadUpdateInput {
+  status?: LeadRecord['status']
+  note?: string | null
+  lastContactedAt?: string | null
+  nextFollowUpAt?: string | null
+}
+
+export interface LeadFilters {
+  status?: LeadRecord['status'] | 'all'
+  platformKey?: string
+  minScore?: number
+  keyword?: string
+}
+
+export interface LeadExportOptions {
+  fields?: string[]
+  filters?: LeadFilters
+}
+
+export interface LeadExportResult {
+  filename: string
+  mimeType: 'text/csv'
+  content: string
+  count: number
+  fields: string[]
+}
+
+export type FollowUpReminderStatus = 'overdue' | 'today' | 'upcoming'
+
+export interface FollowUpReminder {
+  lead: LeadRecord
+  status: FollowUpReminderStatus
+  dueAt: string
+  daysUntilDue: number
+}
+
+export interface FollowUpReminderOptions {
+  horizonDays?: number
+  now?: string
+}
+
+export interface CalendarExportResult {
+  filename: string
+  mimeType: 'text/calendar'
+  content: string
+  count: number
+}
+
+export type AIProviderKey = 'rule' | 'openai' | 'deepseek' | 'dashscope' | 'custom'
+
+export interface AIProviderConfig {
+  provider: AIProviderKey
+  model: string
+  baseUrl?: string
+  apiKey?: string
+  enabled: boolean
+  updatedAt: string
+}
+
+export interface AIProviderPublicConfig {
+  provider: AIProviderKey
+  model: string
+  baseUrl?: string
+  enabled: boolean
+  apiKeySet: boolean
+  apiKeyPreview?: string
+  secretStorage: 'none' | 'encrypted' | 'plain' | 'legacy_plain' | 'external_env' | 'unknown'
+  updatedAt: string
+}
+
+export type AISecretHealthSeverity = 'ok' | 'warning' | 'critical'
+
+export interface AISecretHealth {
+  provider: AIProviderKey
+  severity: AISecretHealthSeverity
+  title: string
+  message: string
+  ageDays: number | null
+  recommendedAction: 'none' | 'configure_key' | 'rotate_key' | 'migrate_secret'
+}
+
+export interface AISecretBackup {
+  id: string
+  provider: AIProviderKey
+  reason: 'migration' | 'manual'
+  secretStorage: AIProviderPublicConfig['secretStorage']
+  apiKeySet: boolean
+  createdAt: string
+}
+
+export interface Task {
+  id: string
+  type: TaskType
+  status: TaskStatus
+  platformKey?: string
+  progress: number
+  input: unknown
+  errorCode?: PlatformErrorCode
+  errorMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AuditEvent {
+  id: string
+  action: string
+  targetType: string
+  targetId?: string
+  message: string
+  createdAt: string
+}

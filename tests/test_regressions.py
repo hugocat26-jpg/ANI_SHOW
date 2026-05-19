@@ -1,5 +1,6 @@
 import base64
 import inspect
+import sqlite3
 import sys
 import tempfile
 import types
@@ -90,6 +91,8 @@ class RegressionTestCase(unittest.TestCase):
     def test_searcher_decodes_wrapped_urls_and_requires_real_content_hosts(self):
         install_pyqt_core_stub()
         from core.searcher import (
+            _best_search_result_title,
+            _clean_result_text,
             _guess_platform_from_url,
             _is_platform_content_url,
             _normalize_result_url,
@@ -115,6 +118,25 @@ class RegressionTestCase(unittest.TestCase):
         self.assertFalse(
             _is_platform_content_url("https://www.instagram.com/p/signin/", "instagram")
         )
+        self.assertEqual(
+            _best_search_result_title(
+                "小红书",
+                "家用咖啡机选购攻略，预算不同怎么选。更多内容...",
+                "https://www.xiaohongshu.com/explore/abc",
+                "小红书",
+            ),
+            "家用咖啡机选购攻略，预算不同怎么选",
+        )
+        self.assertEqual(_clean_result_text("在家喝咖啡 - 抖音"), "在家喝咖啡")
+        self.assertEqual(
+            _best_search_result_title(
+                "抖音 https://www.douyin.com › video",
+                "抖音 https://www.douyin.com › video 咖啡机保姆级教程来了 很多姐妹像我一样第一次在家里使用咖啡机",
+                "https://www.douyin.com/video/7573485523579374939",
+                "抖音",
+            ),
+            "咖啡机保姆级教程来了 很多姐妹像我一样第一次在家里使用咖啡机",
+        )
 
     def test_link_parser_supports_search_result_url_shapes(self):
         self.assertEqual(
@@ -128,6 +150,47 @@ class RegressionTestCase(unittest.TestCase):
             LinkValidator.extract_content_id("https://www.facebook.com/watch/?v=123456789", "facebook"),
             "123456789",
         )
+
+    def test_batch_parser_keeps_going_after_single_url_exception(self):
+        from core.link_parser import LinkParser
+
+        parser = LinkParser()
+        original = parser.parse
+
+        def flaky(url):
+            if "boom" in url:
+                raise RuntimeError("boom")
+            return original(url)
+
+        parser.parse = flaky
+        results = parser.parse_batch([
+            "https://www.bilibili.com/video/BV1zoi9B6Ex7/",
+            "https://boom.example/video/1",
+        ])
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(results[0]["is_valid"])
+        self.assertFalse(results[1]["is_valid"])
+        self.assertIn("解析异常", results[1]["error"])
+
+    def test_platform_status_uses_domain_specific_login_state(self):
+        install_pyqt_core_stub()
+        import core.searcher as searcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp)
+            default = profile / "Default"
+            default.mkdir(parents=True)
+            conn = sqlite3.connect(default / "Cookies")
+            try:
+                conn.execute("CREATE TABLE cookies (host_key TEXT)")
+                conn.execute("INSERT INTO cookies VALUES ('.xiaohongshu.com')")
+                conn.commit()
+            finally:
+                conn.close()
+
+            self.assertTrue(searcher._profile_has_domain_state(profile, "xiaohongshu"))
+            self.assertFalse(searcher._profile_has_domain_state(profile, "instagram"))
 
     def test_all_content_type_defaults_include_all_social_platforms(self):
         from ui.widgets.search_input import CONTENT_TYPE_PLATFORMS
@@ -213,6 +276,49 @@ class RegressionTestCase(unittest.TestCase):
 
         source = inspect.getsource(main.run_local_mode)
         self.assertLess(source.index("QApplication.instance()"), source.index("check_password()"))
+
+    def test_platform_catalog_tracks_supported_and_future_targets(self):
+        install_pyqt_core_stub()
+        from core.platforms import PlatformCapability
+        from core.platforms.catalog import PlatformCatalog
+
+        catalog = PlatformCatalog()
+        keys = {spec.key for spec in catalog.supported()}
+        self.assertIn("douyin", keys)
+        self.assertIn("google", keys)
+        searchable = {spec.key for spec in catalog.by_capability(PlatformCapability.SEARCH)}
+        self.assertIn("bilibili", searchable)
+        future = {target.key for target in catalog.expansion_targets()}
+        self.assertIn("tiktok", future)
+
+    def test_ai_service_has_rule_fallback_for_scoring_and_keywords(self):
+        from core.ai_service import AIService
+
+        service = AIService()
+        keywords = service.expand_keywords("咖啡机")
+        self.assertIn("咖啡机 怎么选", keywords)
+        score = service.score_lead(LeadInfo(
+            nickname="Alice",
+            comment_text="多少钱，有链接吗",
+            intent_level=IntentLevel.HIGH,
+            intent_keywords="多少钱",
+        ))
+        self.assertGreaterEqual(score.score, 90)
+        self.assertEqual(score.suggested_action, "优先跟进")
+
+    def test_application_services_builds_shared_framework(self):
+        install_pyqt_core_stub()
+        from core.app_services import ApplicationServices
+
+        services = ApplicationServices.build(
+            settings=get_settings(),
+            database=self.db,
+            max_concurrent=1,
+        )
+        self.assertIs(services.database, self.db)
+        self.assertIs(services.task_manager.database, self.db)
+        self.assertIs(services.task_manager.recognizer, services.recognizer)
+        self.assertTrue(services.platforms.supported())
 
 
 class ServerAuthTestCase(unittest.TestCase):
