@@ -31,7 +31,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     try {
       const statusUrl = platformStatusUrl(this.spec)
       const html = await this.executor.fetchHtml(statusUrl, this.spec.key)
-      const loggedIn = inferLoggedInFromHtml(html)
+      const loggedIn = inferLoggedInFromHtml(html, this.spec.key)
       const loginRequired = inferLoginRequiredFromHtml(html)
       const shouldLogin = this.spec.requiresLogin || this.spec.capabilities.includes('login')
       const cookieLoggedIn = shouldLogin && !loggedIn && this.executor.hasAuthCookies
@@ -440,13 +440,48 @@ function readablePlatformError(error: unknown, fallback: string): string {
   return text || fallback
 }
 
-function inferLoggedInFromHtml(html: string): boolean {
+function inferLoggedInFromHtml(html: string, platformKey: string): boolean {
   const text = html.toLowerCase()
-  return (
-    /id=["']avatar|class=["'][^"']*(avatar|account|profile|user-menu|user_info|user-info)/i.test(html) ||
-    /退出登录|退出|我的主页|个人主页|消息中心|私信|账号设置|log out|logout|sign out|profile|account settings/i.test(text) ||
-    /"islogin"\s*:\s*true|"isloggedin"\s*:\s*true|"is_logged_in"\s*:\s*true|"loggedin"\s*:\s*true/i.test(text)
-  )
+  if (/"islogin"\s*:\s*true|"isloggedin"\s*:\s*true|"is_logged_in"\s*:\s*true|"loggedin"\s*:\s*true|"is_signed_in"\s*:\s*true/i.test(text)) {
+    return true
+  }
+  const platformRules: Record<string, RegExp[]> = {
+    douyin: [
+      /退出登录|我的主页|个人主页|创作者服务中心/,
+      /data-e2e=["'](?:user-avatar|profile-avatar)["']/i
+    ],
+    tiktok: [
+      /data-e2e=["'](?:profile-icon|user-avatar)["']/i,
+      /href=["'][^"']*\/upload["']/i
+    ],
+    xiaohongshu: [
+      /退出登录|我的主页|创作中心|消息中心/,
+      /class=["'][^"']*(?:user-side|user-dropdown|avatar-wrapper)[^"']*["']/i
+    ],
+    instagram: [
+      /"viewer"\s*:\s*{[^}]*"id"\s*:/i,
+      /href=["']\/direct\/inbox\/["']/i
+    ],
+    facebook: [
+      /"ACCOUNT_ID"\s*:/i,
+      /aria-label=["'](?:Account|账号|个人主页)[^"']*["']/i
+    ],
+    twitter: [
+      /data-testid=["']SideNav_AccountSwitcher_Button["']/i,
+      /aria-label=["'](?:Account menu|账号菜单)[^"']*["']/i
+    ],
+    weibo: [
+      /退出登录|我的首页|个人主页|消息箱/
+    ],
+    zhihu: [
+      /退出登录|我的主页|私信|消息中心/,
+      /aria-label=["']个人中心["']/i
+    ],
+    kuaishou: [
+      /退出登录|个人主页|上传视频|创作者中心/
+    ]
+  }
+  return (platformRules[platformKey] ?? []).some((rule) => rule.test(html))
 }
 
 function inferLoginRequiredFromHtml(html: string): boolean {

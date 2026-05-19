@@ -118,20 +118,20 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
   }
 }
 
-function isAuthCookie(platformKey: string, name: string): boolean {
+export function isAuthCookie(platformKey: string, name: string): boolean {
   const lower = name.toLowerCase()
   const platformMarkers: Record<string, string[]> = {
-    douyin: ['sessionid', 'sid_guard', 'sid_tt', 'uid_tt', 'passport_auth_status', 'passport_csrf_token'],
-    xiaohongshu: ['web_session', 'webid', 'gid', 'customerclientid'],
-    tiktok: ['sessionid', 'sid_guard', 'sid_tt'],
-    instagram: ['sessionid', 'ds_user_id', 'csrftoken'],
-    facebook: ['c_user', 'xs', 'fr'],
+    douyin: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt', 'uid_tt', 'uid_tt_ss', 'passport_auth_status'],
+    xiaohongshu: ['web_session'],
+    tiktok: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt', 'uid_tt', 'uid_tt_ss'],
+    instagram: ['sessionid', 'ds_user_id'],
+    facebook: ['c_user', 'xs'],
     twitter: ['auth_token', 'ct0'],
     weibo: ['sub', 'subp', 'sso_login_status'],
     zhihu: ['z_c0', '_zap'],
-    kuaishou: ['kuaishou.server.web_ph', 'did', 'userid']
+    kuaishou: ['kuaishou.server.web_ph', 'userid']
   }
-  return (platformMarkers[platformKey] ?? ['session', 'auth', 'token', 'uid']).some((marker) => lower.includes(marker.toLowerCase()))
+  return (platformMarkers[platformKey] ?? []).includes(lower)
 }
 
 async function trySelectYoutubeNewestComments(page: { evaluate: <T, A>(pageFunction: (arg: A) => T, arg: A) => Promise<T>; waitForTimeout: (timeout: number) => Promise<void> }): Promise<void> {

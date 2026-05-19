@@ -36,6 +36,7 @@ import {
   extractXiaohongshuPageCursor,
   extractYoutubeContinuationRequests,
   extractZhihuPageCursor,
+  isAuthCookie,
   listModelPricing,
   normalizeIntentResult,
   parseBilibiliComments,
@@ -1353,6 +1354,50 @@ test('search engine adapter uses auth cookies as login state fallback', async ()
   assert.equal(status.loggedIn, true)
   assert.equal(status.errorCode, 'ok')
   assert.equal(status.message, '抖音 登录态有效')
+})
+
+test('search engine adapter does not treat generic profile text as login state', async () => {
+  const html = `
+    <html>
+      <script>window.routes = ["profile", "account", "settings", "login"]</script>
+      <main><a href="/login">Log in</a><button>Sign in</button></main>
+    </html>
+  `
+  const executor: SearchPageExecutor = {
+    async fetchHtml() {
+      return html
+    },
+    async hasAuthCookies() {
+      return false
+    }
+  }
+  const specs: PlatformSpec[] = [
+    { key: 'tiktok', name: 'TikTok', category: 'video', domains: ['tiktok.com'], loginUrl: 'https://www.tiktok.com/login', requiresLogin: true, capabilities: ['search', 'login', 'status'], rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 } },
+    { key: 'instagram', name: 'Instagram', category: 'social', domains: ['instagram.com'], loginUrl: 'https://www.instagram.com/', requiresLogin: true, capabilities: ['search', 'login', 'status'], rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 } },
+    { key: 'facebook', name: 'Facebook', category: 'social', domains: ['facebook.com'], loginUrl: 'https://www.facebook.com/', requiresLogin: true, capabilities: ['search', 'login', 'status'], rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 } },
+    { key: 'twitter', name: 'X/Twitter', category: 'social', domains: ['x.com'], loginUrl: 'https://x.com/i/flow/login', requiresLogin: true, capabilities: ['search', 'login', 'status'], rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 } }
+  ]
+
+  for (const spec of specs) {
+    const status = await new SearchEngineAdapter(spec, (keyword) => `https://example.test?q=${keyword}`, undefined, executor).checkStatus()
+    assert.equal(status.loggedIn, false, `${spec.key} should not be logged in`)
+    assert.equal(status.errorCode, 'login_required')
+  }
+})
+
+test('auth cookie detection uses platform-specific strong cookie names', () => {
+  assert.equal(isAuthCookie('tiktok', 'ttwid'), false)
+  assert.equal(isAuthCookie('tiktok', 'passport_csrf_token'), false)
+  assert.equal(isAuthCookie('tiktok', 'sessionid'), true)
+  assert.equal(isAuthCookie('douyin', 'passport_csrf_token'), false)
+  assert.equal(isAuthCookie('douyin', 'sid_guard'), true)
+  assert.equal(isAuthCookie('xiaohongshu', 'webId'), false)
+  assert.equal(isAuthCookie('xiaohongshu', 'web_session'), true)
+  assert.equal(isAuthCookie('instagram', 'csrftoken'), false)
+  assert.equal(isAuthCookie('instagram', 'ds_user_id'), true)
+  assert.equal(isAuthCookie('facebook', 'fr'), false)
+  assert.equal(isAuthCookie('facebook', 'c_user'), true)
+  assert.equal(isAuthCookie('unknown', 'sessionid'), false)
 })
 
 test('search html parser extracts generic external result anchors safely', () => {
