@@ -231,6 +231,7 @@
 - 2026-05-19：本轮按要求未打包，补齐 TikTok、Instagram、微博、知乎、快手、Reddit 结构化标题回归覆盖；执行 `npm test` 通过 122/122，`npm run build`、`npm audit --omit=dev` 通过。
 - 2026-05-19：本轮按要求未打包，回顾平台适配器、任务流、持久化、AI 与 UI 状态协同，修复评论关闭与登录混合提示的错误分类优先级；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev` 通过。
 - 2026-05-19：发布前清理隐私痕迹并确认 `dist/`、`release/`、`node_modules/`、本地日志均被忽略；执行 `npm test` 通过 123/123，`npm audit --omit=dev` 通过，`npm run package` 通过并生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
+- 2026-05-19：修复 Electron 打包后空白窗口问题：Vite renderer 改为相对资源路径，避免 `loadFile` 场景下 `/assets/...` 指向磁盘根目录；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
 - 2026-05-19：尝试启用 `asar` 并为 Playwright 配置 `asarUnpack`，但 electron-builder 26.8.1 + Electron 42.1.0 在 Windows 注入 asar integrity 资源时写入 `Lead Miner Workbench.exe` 失败；为保持可交付安装包，当前保留 `asar: false`，后续需升级/调整打包链路后再恢复。
 
 ## 尚未完成
