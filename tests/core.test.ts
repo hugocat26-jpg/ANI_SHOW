@@ -764,6 +764,33 @@ test('application core isolates platform status failures', async () => {
   repository.close()
 })
 
+test('application core returns readable platform network errors', async () => {
+  class FailingStatusAdapter extends MetadataOnlyPlatformAdapter {
+    override async checkStatus(): Promise<PlatformStatus> {
+      throw new Error('page.goto: net::ERR_CONNECTION_CLOSED at https://www.douyin.com/ Call log: navigating')
+    }
+  }
+  const registry = new PlatformRegistry()
+  registry.register(new FailingStatusAdapter({
+    key: 'douyin',
+    name: '抖音',
+    category: 'video',
+    domains: ['douyin.com'],
+    requiresLogin: true,
+    capabilities: ['search', 'login', 'status'],
+    rateLimit: { concurrency: 1, minDelayMs: 0, maxRetries: 0 }
+  }))
+  const repository = new LeadMinerRepository(':memory:')
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new BrowserContextManager())
+
+  const [status] = await app.checkPlatformStatuses()
+
+  assert.equal(status.errorCode, 'network_error')
+  assert.match(status.message, /网络连接被平台关闭/)
+  assert.doesNotMatch(status.message, /Call log|ERR_CONNECTION_CLOSED/)
+  repository.close()
+})
+
 test('application core keeps partial search results when one platform fails', async () => {
   class FailingSearchAdapter extends MetadataOnlyPlatformAdapter {
     override async search(_input: SearchInput): Promise<SearchResult[]> {

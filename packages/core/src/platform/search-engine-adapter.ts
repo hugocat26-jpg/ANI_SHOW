@@ -55,7 +55,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
         latencyMs: Date.now() - startedAt,
         checkedAt: new Date().toISOString(),
         errorCode: 'network_error',
-        message: error instanceof Error ? error.message : `${this.spec.name} 状态检查失败`
+        message: readablePlatformError(error, `${this.spec.name} 状态检查失败`)
       }
     }
   }
@@ -415,6 +415,25 @@ function platformStatusUrl(spec: PlatformSpec): string {
   if (spec.loginUrl) return spec.loginUrl
   const domain = spec.domains[0] ?? ''
   return domain ? `https://${domain}` : 'https://example.com'
+}
+
+function readablePlatformError(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  const text = raw
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/╔[\s\S]*?╚[═]+╝/g, '')
+    .replace(/Call log:[\s\S]*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (/Executable doesn't exist|ms-playwright|playwright install/i.test(text)) {
+    return '浏览器内核未就绪，请使用最新安装包重新安装后再试。'
+  }
+  if (/ERR_CONNECTION_CLOSED|ECONNRESET|socket hang up|Target page, context or browser has been closed/i.test(text)) {
+    return '网络连接被平台关闭，可能是平台风控、代理/网络不稳定或访问被阻断；请稍后重试，或先登录/完成验证。'
+  }
+  if (/Timeout|timed out|Navigation timeout/i.test(text)) return '平台页面加载超时，请稍后重试。'
+  if (/ERR_NAME_NOT_RESOLVED|ENOTFOUND/i.test(text)) return '域名解析失败，请检查网络、DNS 或代理设置。'
+  return text || fallback
 }
 
 function inferLoggedInFromHtml(html: string): boolean {

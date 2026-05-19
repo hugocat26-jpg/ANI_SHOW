@@ -62,7 +62,15 @@ export class BrowserContextManager {
     })
     try {
       const page = context.pages()[0] ?? await context.newPage()
-      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      try {
+        await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      } catch (error) {
+        return {
+          success: false,
+          message: `${spec.name} 登录页暂时无法打开：${readableBrowserError(error)}`,
+          profile
+        }
+      }
       await page.waitForTimeout(timeoutMs)
       return {
         success: true,
@@ -73,4 +81,19 @@ export class BrowserContextManager {
       await context.close()
     }
   }
+}
+
+function readableBrowserError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  const text = raw
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/Call log:[\s\S]*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (/ERR_CONNECTION_CLOSED|ECONNRESET|socket hang up|Target page, context or browser has been closed/i.test(text)) {
+    return '网络连接被平台关闭，可能是平台风控、代理/网络不稳定或访问被阻断；请稍后重试。'
+  }
+  if (/Timeout|timed out|Navigation timeout/i.test(text)) return '页面加载超时，请稍后重试。'
+  if (/ERR_NAME_NOT_RESOLVED|ENOTFOUND/i.test(text)) return '域名解析失败，请检查网络、DNS 或代理设置。'
+  return text || '未知网络错误'
 }
