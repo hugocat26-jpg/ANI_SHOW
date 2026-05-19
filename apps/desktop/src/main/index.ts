@@ -45,7 +45,7 @@ function createWindow() {
     minHeight: 720,
     title: '客户线索挖掘平台',
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false
     }
