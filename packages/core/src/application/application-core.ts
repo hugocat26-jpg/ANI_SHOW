@@ -401,7 +401,15 @@ export class ApplicationCore {
 
   async loginPlatform(platformKey: string): Promise<PlatformLoginResult> {
     const adapter = this.platforms.get(platformKey)
-    const result = await this.browser.openLoginWindow(adapter.spec, adapter.spec.loginUrl)
+    let result: PlatformLoginResult
+    try {
+      result = await this.browser.openLoginWindow(adapter.spec, adapter.spec.loginUrl)
+    } catch (error) {
+      result = {
+        success: false,
+        message: `${adapter.spec.name} 登录窗口已关闭或无法打开：${platformErrorMessage(error, '登录窗口异常关闭')}`
+      }
+    }
     let status: PlatformStatus | undefined
     try {
       status = await adapter.checkStatus()

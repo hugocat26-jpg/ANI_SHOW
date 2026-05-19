@@ -235,6 +235,7 @@
 - 2026-05-19：修复 Electron 桌面端平台登录不可用问题：preload 改为 CommonJS `index.cjs` 并由主窗口显式加载，避免前端拿不到 `window.leadMiner` 后退回浏览器预览 API；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
 - 2026-05-19：修复打包版 Playwright 浏览器缺失问题：安装并随包携带项目内 Chromium，打包运行时设置 `PLAYWRIGHT_BROWSERS_PATH=0`，所有 Playwright 启动点显式使用完整 Chromium `executablePath`，避免寻找用户目录 `ms-playwright` 或缺失的 headless shell；同时移除同名 `portable` 输出目标，保留稳定 NSIS 安装版 exe。执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
 - 2026-05-19：优化平台状态检查和登录错误体验：平台状态检查改为低并发执行，避免一次性拉起大量浏览器请求；Playwright 网络/风控错误统一压缩为可读中文提示，不再把 `Call log`、`ERR_CONNECTION_CLOSED` 等底层日志直接展示到界面。执行 `npm test` 通过 124/124，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
+- 2026-05-19：修复手动关闭平台登录浏览器被误判为 IPC 异常的问题：登录窗口关闭现在视为用户完成/结束登录流程，并继续复查登录态；兜底捕获登录窗口关闭异常，避免 `Target page, context or browser has been closed` 直接展示到界面。执行 `npm test` 通过 125/125，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
 - 2026-05-19：尝试启用 `asar` 并为 Playwright 配置 `asarUnpack`，但 electron-builder 26.8.1 + Electron 42.1.0 在 Windows 注入 asar integrity 资源时写入 `Lead Miner Workbench.exe` 失败；为保持可交付安装包，当前保留 `asar: false`，后续需升级/调整打包链路后再恢复。
 
 ## 尚未完成

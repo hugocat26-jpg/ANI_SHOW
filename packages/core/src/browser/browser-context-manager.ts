@@ -71,16 +71,43 @@ export class BrowserContextManager {
           profile
         }
       }
-      await page.waitForTimeout(timeoutMs)
+      try {
+        await waitForLoginWindowClose(context, timeoutMs)
+      } catch (error) {
+        if (!isBrowserClosedError(error)) throw error
+      }
       return {
         success: true,
-        message: `${spec.name} 登录窗口已关闭，登录态已保存到独立 Profile`,
+        message: `${spec.name} 登录窗口已关闭，正在复查登录态`,
         profile
       }
     } finally {
       await context.close()
     }
   }
+}
+
+async function waitForLoginWindowClose(context: { on: (event: 'close', listener: () => void) => void; off: (event: 'close', listener: () => void) => void }, timeoutMs: number): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      const onClose = () => {
+        if (timeout) clearTimeout(timeout)
+        context.off('close', onClose)
+        resolve()
+      }
+      context.on('close', onClose)
+      timeout = setTimeout(() => {
+        context.off('close', onClose)
+        resolve()
+      }, timeoutMs)
+    })
+  ])
+}
+
+function isBrowserClosedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /Target page, context or browser has been closed|Browser has been closed|Context closed/i.test(message)
 }
 
 function readableBrowserError(error: unknown): string {

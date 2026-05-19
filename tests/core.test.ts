@@ -1491,6 +1491,50 @@ test('application core rechecks and persists platform status after login', async
   repository.close()
 })
 
+test('application core handles manually closed login windows gracefully', async () => {
+  const spec: PlatformSpec = {
+    key: 'mock_closed_login',
+    name: 'MockClosedLogin',
+    category: 'social',
+    domains: ['mock.test'],
+    loginUrl: 'https://mock.test/login',
+    requiresLogin: true,
+    capabilities: ['login', 'status'],
+    rateLimit: { concurrency: 1, minDelayMs: 0, maxRetries: 0 }
+  }
+  class LoggedOutAdapter extends MetadataOnlyPlatformAdapter {
+    override async checkStatus(): Promise<PlatformStatus> {
+      return {
+        platformKey: spec.key,
+        available: true,
+        loggedIn: false,
+        latencyMs: 5,
+        checkedAt: new Date().toISOString(),
+        errorCode: 'login_required',
+        message: 'MockClosedLogin 未登录'
+      }
+    }
+  }
+  class ClosedLoginBrowser extends BrowserContextManager {
+    override async openLoginWindow(): Promise<{ success: boolean; message: string; profile: { platformKey: string; userDataDir: string } }> {
+      throw new Error('page.waitForTimeout: Target page, context or browser has been closed')
+    }
+  }
+  const registry = new PlatformRegistry()
+  const repository = new LeadMinerRepository(':memory:')
+  registry.register(new LoggedOutAdapter(spec, new ClosedLoginBrowser()))
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new ClosedLoginBrowser())
+
+  const result = await app.loginPlatform(spec.key)
+
+  assert.equal(result.success, false)
+  assert.equal(result.status?.errorCode, 'login_required')
+  assert.match(result.message, /登录窗口已关闭或无法打开/)
+  assert.doesNotMatch(result.message, /Target page|waitForTimeout/)
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'platform.login.failed' && event.targetId === spec.key))
+  repository.close()
+})
+
 test('video adapters parse youtube and bilibili content refs', async () => {
   const app = createDefaultApplicationCore()
   const youtube = await app.parseContent('youtube', 'https://www.youtube.com/watch?v=abc123XYZ00')
