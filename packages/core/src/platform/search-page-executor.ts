@@ -1,11 +1,16 @@
 import type { SearchResult } from '../domain/types.ts'
 import { BrowserContextManager } from '../browser/browser-context-manager.ts'
+import { isAllowedOutboundUrl, validateOutboundUrl } from '../security/outbound-url.ts'
 
 export interface SearchPageExecutor {
-  fetchHtml(url: string, platformKey: string): Promise<string>
-  fetchRenderedHtml?(url: string, platformKey: string, options?: RenderPageOptions): Promise<string>
-  fetchText?(url: string, platformKey: string, options?: FetchTextOptions): Promise<string>
+  fetchHtml(url: string, platformKey: string, options?: PageSecurityOptions): Promise<string>
+  fetchRenderedHtml?(url: string, platformKey: string, options?: RenderPageOptions & PageSecurityOptions): Promise<string>
+  fetchText?(url: string, platformKey: string, options?: FetchTextOptions & PageSecurityOptions): Promise<string>
   hasAuthCookies?(platformKey: string, url: string): Promise<boolean>
+}
+
+export interface PageSecurityOptions {
+  allowedDomains?: string[]
 }
 
 export interface RenderPageOptions {
@@ -34,14 +39,15 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
     this.browser = browser
   }
 
-  async fetchHtml(url: string, platformKey = 'default'): Promise<string> {
+  async fetchHtml(url: string, platformKey = 'default', options: PageSecurityOptions = {}): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
       ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
       : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
     try {
       const page = context.pages()[0] ?? await context.newPage()
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      assertAllowedFinalUrl(response?.url() ?? page.url(), options.allowedDomains)
       await page.waitForTimeout(800)
       return await page.content()
     } finally {
@@ -49,14 +55,15 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
     }
   }
 
-  async fetchRenderedHtml(url: string, platformKey: string, options: RenderPageOptions = {}): Promise<string> {
+  async fetchRenderedHtml(url: string, platformKey: string, options: RenderPageOptions & PageSecurityOptions = {}): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
       ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
       : await chromium.launchPersistentContext('', { executablePath: chromium.executablePath(), headless: true })
     try {
       const page = context.pages()[0] ?? await context.newPage()
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      assertAllowedFinalUrl(response?.url() ?? page.url(), options.allowedDomains)
       await page.waitForTimeout(800)
       if (options.commentSort === 'newest') {
         await trySelectYoutubeNewestComments(page)
@@ -86,7 +93,7 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
     }
   }
 
-  async fetchText(url: string, platformKey: string, options: FetchTextOptions = {}): Promise<string> {
+  async fetchText(url: string, platformKey: string, options: FetchTextOptions & PageSecurityOptions = {}): Promise<string> {
     const { chromium } = await import('playwright')
     const context = this.browser
       ? await chromium.launchPersistentContext(this.browser.profileFor(platformKey).userDataDir, { executablePath: chromium.executablePath(), headless: true })
@@ -98,6 +105,7 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
         data: options.body,
         timeout: 30000
       })
+      assertAllowedFinalUrl(response.url(), options.allowedDomains)
       return await response.text()
     } finally {
       await context.close()
@@ -116,6 +124,20 @@ export class PlaywrightSearchPageExecutor implements SearchPageExecutor {
       await context.close()
     }
   }
+}
+
+function assertAllowedFinalUrl(rawUrl: string, allowedDomains?: string[]): void {
+  if (!allowedDomains?.length) return
+  try {
+    validateOutboundUrl(rawUrl, { allowedDomains, requireHttps: true })
+  } catch (error) {
+    const message = error instanceof Error ? error.message.replace(/^出站请求/, '平台请求') : '平台请求被拦截'
+    throw new Error(message)
+  }
+}
+
+export function isAllowedPlatformFinalUrl(rawUrl: string, allowedDomains: string[]): boolean {
+  return isAllowedOutboundUrl(rawUrl, { allowedDomains, requireHttps: true })
 }
 
 export function isAuthCookie(platformKey: string, name: string): boolean {

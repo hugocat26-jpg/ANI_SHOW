@@ -90,6 +90,8 @@ class DataExporter:
             records = export_df.to_dict(orient="records")
             cleaned_records = ComplianceChecker.validate_export_data(records)
             export_df = pd.DataFrame(cleaned_records)
+            for column in export_df.columns:
+                export_df[column] = export_df[column].apply(self._neutralize_spreadsheet_formula)
 
             # 导出
             if format_type == "csv":
@@ -142,3 +144,10 @@ class DataExporter:
         if not fields:
             return None
         return [cls.FIELD_NAME_MAP.get(field, field) for field in fields]
+
+    @staticmethod
+    def _neutralize_spreadsheet_formula(value):
+        """防止 CSV/XLSX 被表格软件按公式执行。"""
+        if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+            return f"'{value}"
+        return value

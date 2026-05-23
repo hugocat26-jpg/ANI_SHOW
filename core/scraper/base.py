@@ -21,6 +21,18 @@ from utils.logger import Logger
 _browser_init_lock = threading.Lock()
 
 
+def _browser_security_args() -> list[str]:
+    """Return optional browser flags that intentionally weaken isolation."""
+    args: list[str] = []
+    if os.environ.get("CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX") == "1":
+        Logger().warning("高风险兼容开关已启用: CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX=1")
+        args.append("--no-sandbox")
+    if os.environ.get("CLIENT_LEAD_MINER_DISABLE_WEB_SECURITY") == "1":
+        Logger().warning("高风险兼容开关已启用: CLIENT_LEAD_MINER_DISABLE_WEB_SECURITY=1")
+        args.append("--disable-web-security")
+    return args
+
+
 class BaseScraper(ABC):
     """爬虫基类 — 所有平台爬虫的通用实现"""
 
@@ -71,10 +83,9 @@ class BaseScraper(ABC):
 
             launch_args = [
                 "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-web-security",
             ]
+            launch_args.extend(_browser_security_args())
             # Windows 无头模式添加 --disable-gpu 提高稳定性
             if self.headless:
                 launch_args.append("--disable-gpu")

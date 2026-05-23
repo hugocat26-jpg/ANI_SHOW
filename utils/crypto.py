@@ -1,6 +1,6 @@
 """
 加密工具模块
-使用 AES-256-CBC 加密敏感数据（API密钥、密码等）
+新写入使用 AES-256-GCM；旧 AES-256-CBC 密文保留只读兼容。
 """
 import base64
 import hashlib
@@ -29,23 +29,30 @@ class CryptoUtil:
     @classmethod
     def encrypt(cls, plaintext: str, key: Optional[bytes] = None) -> str:
         """
-        AES-256-CBC 加密
-        返回 base64 编码的密文（含IV）
+        AES-256-GCM 加密
+        返回带版本前缀的 base64 编码密文（nonce + tag + ciphertext）
         """
         if key is None:
             key = cls._get_default_key()
-        iv = os.urandom(16)
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        encrypted = cipher.encrypt(pad(plaintext.encode("utf-8"), AES.block_size))
-        return base64.b64encode(iv + encrypted).decode("utf-8")
+        nonce = os.urandom(12)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        encrypted, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
+        return "gcm:" + base64.b64encode(nonce + tag + encrypted).decode("utf-8")
 
     @classmethod
     def decrypt(cls, ciphertext: str, key: Optional[bytes] = None) -> str:
         """
-        AES-256-CBC 解密
+        AES-256-GCM 解密；无版本前缀时按旧 AES-256-CBC 解密。
         """
         if key is None:
             key = cls._get_default_key()
+        if ciphertext.startswith("gcm:"):
+            raw = base64.b64decode(ciphertext[4:].encode("utf-8"))
+            nonce = raw[:12]
+            tag = raw[12:28]
+            encrypted = raw[28:]
+            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+            return cipher.decrypt_and_verify(encrypted, tag).decode("utf-8")
         raw = base64.b64decode(ciphertext.encode("utf-8"))
         iv = raw[:16]
         encrypted = raw[16:]

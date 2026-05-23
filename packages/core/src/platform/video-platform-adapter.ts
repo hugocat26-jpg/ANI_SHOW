@@ -24,6 +24,11 @@ interface CachedPageHtml {
   cachedAt: number
 }
 
+const MAX_VIDEO_JSON_INPUT_CHARS = 1_500_000
+const MAX_VIDEO_JSON_SCRIPT_BLOCKS = 12
+const MAX_VIDEO_JSON_WALK_DEPTH = 80
+const MAX_VIDEO_JSON_WALK_NODES = 25_000
+
 function extractYoutubeId(url: URL): string | null {
   if (url.hostname.includes('youtu.be')) return url.pathname.split('/').filter(Boolean)[0] ?? null
   if (url.pathname === '/watch') return url.searchParams.get('v')
@@ -89,7 +94,7 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
     if (this.kind !== 'bilibili' || !this.commentExecutor?.fetchText) return super.checkStatus()
     const startedAt = Date.now()
     try {
-      const text = await this.commentExecutor.fetchText('https://api.bilibili.com/x/web-interface/nav', this.spec.key)
+      const text = await this.commentExecutor.fetchText('https://api.bilibili.com/x/web-interface/nav', this.spec.key, { allowedDomains: this.spec.domains })
       const payload = JSON.parse(text) as { code?: number; data?: { isLogin?: boolean }; message?: string }
       const loggedIn = payload.code === 0 && payload.data?.isLogin === true
       return {
@@ -118,7 +123,7 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
     if (!this.commentExecutor) return super.checkStatus()
     const startedAt = Date.now()
     try {
-      const html = await this.commentExecutor.fetchHtml('https://www.youtube.com/', this.spec.key)
+      const html = await this.commentExecutor.fetchHtml('https://www.youtube.com/', this.spec.key, { allowedDomains: this.spec.domains })
       const loggedIn = isYoutubeLoggedInHtml(html)
       return {
         platformKey: this.spec.key,
@@ -226,7 +231,8 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
             scrollSteps: 8,
             scrollDelayMs: 650,
             expandText: ['Show more', 'Read more', '展开', '更多'],
-            commentSort: 'newest'
+            commentSort: 'newest',
+            allowedDomains: this.spec.domains
           })
           : await this.fetchPageHtml(content.url)
         const continuationResult = await this.fetchYoutubeContinuationPages(content, html, 5)
@@ -254,7 +260,7 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
     if (!this.commentExecutor) return ''
     const cached = this.pageHtmlCache.get(url)
     if (cached && Date.now() - cached.cachedAt <= 300_000) return cached.html
-    const html = await this.commentExecutor.fetchHtml(url, this.spec.key)
+    const html = await this.commentExecutor.fetchHtml(url, this.spec.key, { allowedDomains: this.spec.domains })
     this.pageHtmlCache.set(url, { html, cachedAt: Date.now() })
     if (this.pageHtmlCache.size > 30) {
       const oldest = this.pageHtmlCache.keys().next().value
@@ -350,6 +356,7 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
     if (request.visitorData) headers['x-goog-visitor-id'] = request.visitorData
     return await this.commentExecutor.fetchText(`https://www.youtube.com/youtubei/v1/next?key=${encodeURIComponent(request.apiKey)}`, this.spec.key, {
       method: 'POST',
+      allowedDomains: this.spec.domains,
       headers,
       body
     })
@@ -362,7 +369,7 @@ export class VideoPlatformAdapter extends SearchEngineAdapter {
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       let retryCode: number | undefined
       try {
-        const json = await this.commentExecutor.fetchHtml(url, this.spec.key)
+        const json = await this.commentExecutor.fetchHtml(url, this.spec.key, { allowedDomains: this.spec.domains })
         const apiError = extractBilibiliApiErrorInfo(json)
         if (!apiError) return { json }
         retryCode = apiError.code
@@ -521,6 +528,7 @@ function extractStructuredVideoTitle(text: string): string | undefined {
 }
 
 function extractVideoJsonObjects(text: string): unknown[] {
+  if (text.length > MAX_VIDEO_JSON_INPUT_CHARS) return []
   const objects: unknown[] = []
   try {
     objects.push(JSON.parse(text))
@@ -532,7 +540,8 @@ function extractVideoJsonObjects(text: string): unknown[] {
     ...text.matchAll(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/g),
     ...text.matchAll(/__INITIAL_STATE__\s*=\s*({[\s\S]*?});/g)
   ]
-  for (const match of candidates) {
+  for (const match of candidates.slice(0, MAX_VIDEO_JSON_SCRIPT_BLOCKS)) {
+    if ((match[1]?.length ?? 0) > MAX_VIDEO_JSON_INPUT_CHARS) continue
     try {
       objects.push(JSON.parse(match[1]))
     } catch {
@@ -543,14 +552,26 @@ function extractVideoJsonObjects(text: string): unknown[] {
 }
 
 function walkVideoJson(value: unknown, visitor: (node: Record<string, unknown>) => void): void {
-  if (!value || typeof value !== 'object') return
-  if (Array.isArray(value)) {
-    for (const item of value) walkVideoJson(item, visitor)
-    return
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  let visited = 0
+  while (stack.length > 0 && visited < MAX_VIDEO_JSON_WALK_NODES) {
+    const current = stack.pop()
+    if (!current || !current.value || typeof current.value !== 'object') continue
+    if (current.depth > MAX_VIDEO_JSON_WALK_DEPTH) continue
+    visited += 1
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], depth: current.depth + 1 })
+      }
+      continue
+    }
+    const node = current.value as Record<string, unknown>
+    visitor(node)
+    const children = Object.values(node)
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ value: children[index], depth: current.depth + 1 })
+    }
   }
-  const node = value as Record<string, unknown>
-  visitor(node)
-  for (const child of Object.values(node)) walkVideoJson(child, visitor)
 }
 
 function decodeHtmlEntities(value: string): string {

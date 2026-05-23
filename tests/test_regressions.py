@@ -88,6 +88,18 @@ class RegressionTestCase(unittest.TestCase):
             LinkValidator.identify_platform("https://evil.example/watch?next=douyin.com/video/123")
         )
 
+    def test_crypto_uses_authenticated_ciphertext_for_new_values(self):
+        try:
+            from utils.crypto import CryptoUtil
+        except ModuleNotFoundError as exc:
+            if exc.name == "Crypto":
+                self.skipTest("pycryptodome is not installed in this Python runtime")
+            raise
+        ciphertext = CryptoUtil.encrypt("secret-value")
+
+        self.assertTrue(ciphertext.startswith("gcm:"))
+        self.assertEqual(CryptoUtil.decrypt(ciphertext), "secret-value")
+
     def test_searcher_decodes_wrapped_urls_and_requires_real_content_hosts(self):
         install_pyqt_core_stub()
         from core.searcher import (
@@ -224,6 +236,29 @@ class RegressionTestCase(unittest.TestCase):
         self.assertEqual(header, "用户ID,昵称,意向等级")
         self.assertNotIn("意向评论", header)
 
+    def test_export_neutralizes_spreadsheet_formulas(self):
+        self.db.insert_lead(LeadInfo(
+            user_id="u-formula",
+            nickname='=HYPERLINK("https://evil.test","click")',
+            comment_text="+cmd|calc",
+            intent_level=IntentLevel.HIGH,
+            platform="douyin",
+            platform_name="抖音",
+            content_id="c-formula",
+        ))
+
+        csv_path = Path(self.tmp.name) / "formula.csv"
+        success, message = DataExporter(self.db).export(
+            str(csv_path),
+            format_type="csv",
+            fields=["nickname", "comment_text"],
+        )
+
+        self.assertTrue(success, message)
+        text = csv_path.read_text(encoding="utf-8-sig")
+        self.assertIn('\'=HYPERLINK', text)
+        self.assertIn("'+cmd|calc", text)
+
     def test_company_insert_updates_same_name_instead_of_duplicating(self):
         first_id = self.db.insert_company(CompanyInfo(name="Acme", website="https://old.example"))
         second_id = self.db.insert_company(CompanyInfo(name="Acme", website="https://new.example"))
@@ -339,6 +374,11 @@ class ServerAuthTestCase(unittest.TestCase):
     def tearDown(self):
         Database._instances.clear()
 
+    @staticmethod
+    def _auth_headers():
+        token = base64.b64encode(b"admin:secret").decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
     def test_server_requires_auth_and_accepts_basic_auth(self):
         try:
             from network.server import NetworkServer
@@ -353,8 +393,7 @@ class ServerAuthTestCase(unittest.TestCase):
 
         self.assertEqual(client.get("/api/health").status_code, 401)
 
-        token = base64.b64encode(b"admin:secret").decode("ascii")
-        resp = client.get("/api/health", headers={"Authorization": f"Basic {token}"})
+        resp = client.get("/api/health", headers=self._auth_headers())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()["status"], "ok")
 
@@ -372,6 +411,54 @@ class ServerAuthTestCase(unittest.TestCase):
 
         resp = app.test_client().get("/api/health")
         self.assertEqual(resp.status_code, 503)
+
+    def test_server_rejects_invalid_lead_create_payloads(self):
+        try:
+            from network.server import NetworkServer
+            app = NetworkServer(host="127.0.0.1", port=8765).create_app()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        client = app.test_client()
+        headers = self._auth_headers()
+
+        too_long = client.post("/api/leads", headers=headers, json={
+            "user_id": "u1",
+            "content_id": "c1",
+            "nickname": "n" * 121,
+        })
+        self.assertEqual(too_long.status_code, 400)
+
+        bad_likes = client.post("/api/leads", headers=headers, json={
+            "user_id": "u1",
+            "content_id": "c1",
+            "likes": "many",
+        })
+        self.assertEqual(bad_likes.status_code, 400)
+
+        bad_intent = client.post("/api/leads", headers=headers, json={
+            "user_id": "u1",
+            "content_id": "c1",
+            "intent_level": "极高",
+        })
+        self.assertEqual(bad_intent.status_code, 400)
+
+    def test_server_update_requires_whitelisted_fields(self):
+        try:
+            from network.server import NetworkServer
+            app = NetworkServer(host="127.0.0.1", port=8765).create_app()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        client = app.test_client()
+        headers = self._auth_headers()
+
+        rejected = client.put("/api/leads/1", headers=headers, json={"source_url": "https://evil.test"})
+        self.assertEqual(rejected.status_code, 400)
+
+        accepted = client.put("/api/leads/1", headers=headers, json={"notes": "已人工确认", "manually_marked": True})
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.get_json()["status"], "ok")
 
 
 if __name__ == "__main__":

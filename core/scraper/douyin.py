@@ -18,6 +18,17 @@ from storage.models import CommentInfo
 _DOUYIN_PROFILE_DIR = Path.home() / ".client_lead_miner" / "douyin_profile"
 
 
+def _browser_security_args() -> list[str]:
+    if os.environ.get("CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX") != "1":
+        return []
+    try:
+        from utils.logger import Logger
+        Logger().warning("高风险兼容开关已启用: CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX=1")
+    except Exception:
+        pass
+    return ["--no-sandbox"]
+
+
 class DouyinScraper(BaseScraper):
     """抖音爬虫 — 网络拦截 + DOM 兜底 + 持久化登录态"""
 
@@ -46,7 +57,7 @@ class DouyinScraper(BaseScraper):
                 user_data_dir=str(_DOUYIN_PROFILE_DIR),
                 headless=headless,
                 channel="msedge",
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                args=["--disable-blink-features=AutomationControlled", *_browser_security_args()],
                 viewport={"width": 1920, "height": 1080},
                 locale="zh-CN",
             )

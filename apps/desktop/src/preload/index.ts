@@ -2,12 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('leadMiner', {
   listPlatforms: () => ipcRenderer.invoke('platform:list'),
+  listPlatformExpansionTargets: () => ipcRenderer.invoke('platform:targets'),
+  listPlatformConnectorConfigs: () => ipcRenderer.invoke('platform:listConnectorConfigs'),
+  savePlatformConnectorConfig: (input: unknown) => ipcRenderer.invoke('platform:saveConnectorConfig', input),
   checkPlatformStatuses: () => ipcRenderer.invoke('platform:status'),
   loginPlatform: (platformKey: string) => ipcRenderer.invoke('platform:login', platformKey),
   planSearch: (keyword: string) => ipcRenderer.invoke('search:plan', keyword),
   runSearch: (input: { keyword: string; platformKeys: string[] }) => ipcRenderer.invoke('search:run', input),
   listSearchResults: () => ipcRenderer.invoke('search:results'),
   collectComments: (input: { platformKey: string; url: string }) => ipcRenderer.invoke('collect:comments', input),
+  previewManualContent: (input: unknown) => ipcRenderer.invoke('import:previewManualContent', input),
+  importManualContent: (input: unknown) => ipcRenderer.invoke('import:manualContent', input),
   listComments: (contentId?: string) => ipcRenderer.invoke('comments:list', contentId),
   listLeads: (filters?: unknown) => ipcRenderer.invoke('leads:list', filters),
   getLeadDetail: (id: string) => ipcRenderer.invoke('leads:detail', id),
@@ -18,6 +23,7 @@ contextBridge.exposeInMainWorld('leadMiner', {
   updateLeadStatus: (input: { id: string; status: 'new' | 'contacted' | 'ignored' }) => ipcRenderer.invoke('leads:updateStatus', input),
   updateLead: (input: unknown) => ipcRenderer.invoke('leads:update', input),
   bulkUpdateLeadStatus: (input: { ids: string[]; status: 'new' | 'contacted' | 'ignored' }) => ipcRenderer.invoke('leads:bulkUpdateStatus', input),
+  previewLeadExport: (input?: unknown) => ipcRenderer.invoke('leads:previewExport', input),
   exportLeads: (input?: unknown) => ipcRenderer.invoke('leads:export', input),
   exportLeadsToFile: (input?: unknown) => ipcRenderer.invoke('leads:exportToFile', input),
   listAuditLogs: (limit?: number) => ipcRenderer.invoke('audit:list', limit),
@@ -37,5 +43,7 @@ contextBridge.exposeInMainWorld('leadMiner', {
   getAIRecoveryAdvice: () => ipcRenderer.invoke('ai:recoveryAdvice'),
   notifyFollowUps: (input: unknown) => ipcRenderer.invoke('notify:followups', input),
   notifyAIRecovery: (input: unknown) => ipcRenderer.invoke('notify:aiRecovery', input),
+  previewPrivacyCleanup: (input: unknown) => ipcRenderer.invoke('privacy:previewCleanup', input),
+  cleanupPrivacyData: (input: unknown) => ipcRenderer.invoke('privacy:cleanup', input),
   listTasks: () => ipcRenderer.invoke('task:list')
 })

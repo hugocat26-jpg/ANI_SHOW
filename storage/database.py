@@ -205,7 +205,8 @@ class Database:
             params.append(date_to)
 
         where_clause = " AND ".join(conditions)
-        sql = f"SELECT * FROM leads WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?"
+        safe_order_by = self._safe_leads_order_by(order_by)
+        sql = f"SELECT * FROM leads WHERE {where_clause} ORDER BY {safe_order_by} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         cursor = conn.execute(sql, params)
@@ -441,6 +442,21 @@ class Database:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+    @staticmethod
+    def _safe_leads_order_by(order_by: str) -> str:
+        allowed_fields = {
+            "collected_at", "created_at", "comment_time", "likes",
+            "intent_level", "platform", "nickname", "id"
+        }
+        parts = str(order_by or "collected_at DESC").strip().split()
+        field = parts[0] if parts else "collected_at"
+        direction = parts[1].upper() if len(parts) > 1 else "DESC"
+        if field not in allowed_fields:
+            field = "collected_at"
+        if direction not in {"ASC", "DESC"}:
+            direction = "DESC"
+        return f"{field} {direction}"
 
     @staticmethod
     def _row_to_lead(row: sqlite3.Row) -> LeadInfo:

@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadRecord, ModelPricingView, PlatformSpec, PlatformStatus, SearchResult, Task } from '../../../../../packages/core/src/index'
+import { canBatchCollectPlatform, canLoginPlatform, canSearchPlatform, requiresSingleItemCollection } from '../../../../../packages/core/src/platform/capability-policy'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadExportPreview, LeadRecord, ManualImportConflictStrategy, ManualImportPreview, ManualImportTemplateType, ModelPricingView, PlatformConnectorPublicConfig, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, SearchResult, Task } from '../../../../../packages/core/src/index'
 import { getLeadMinerApi } from './leadMinerApi'
 
 const api = getLeadMinerApi()
 type ViewKey = 'dashboard' | 'platforms' | 'searchResults' | 'tasks' | 'leads' | 'ai' | 'settings'
+type ConnectorErrorFilter = 'all' | 'failed' | 'quota_exhausted' | 'auth_failed' | 'rate_limited' | 'retryable'
 
 export function App() {
   const [keyword, setKeyword] = useState('咖啡机')
   const [selected, setSelected] = useState<ViewKey>('dashboard')
   const [platforms, setPlatforms] = useState<PlatformSpec[]>([])
+  const [platformTargets, setPlatformTargets] = useState<PlatformSpec[]>([])
+  const [platformConnectorConfigs, setPlatformConnectorConfigs] = useState<PlatformConnectorPublicConfig[]>([])
+  const [connectorErrorFilter, setConnectorErrorFilter] = useState<ConnectorErrorFilter>('all')
   const [statuses, setStatuses] = useState<PlatformStatus[]>([])
   const [keywordPlan, setKeywordPlan] = useState<KeywordPlan>({ seed: '', keywords: [], locales: [] })
   const [results, setResults] = useState<SearchResult[]>([])
@@ -28,6 +33,38 @@ export function App() {
   const [failurePresets, setFailurePresets] = useState<AIFailurePolicyPreset[]>([])
   const [recoveryAdvice, setRecoveryAdvice] = useState<AIRecoveryAdvice | undefined>()
   const [aiForm, setAiForm] = useState({ provider: 'deepseek' as AIProviderKey, model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', enabled: true })
+  const [platformConnectorForm, setPlatformConnectorForm] = useState({
+    platformKey: '',
+    enabled: false,
+    apiBaseUrl: '',
+    apiKey: '',
+    quotaPerDay: 1000,
+    minDelayMs: 1000,
+    importFields: 'url,title,body,published_at',
+    requiredFields: 'url,body'
+  })
+  const [manualImportForm, setManualImportForm] = useState({
+    platformKey: 'wechat_official_account',
+    templateType: 'wechat_article_csv' as ManualImportTemplateType,
+    conflictStrategy: 'skip_duplicates' as ManualImportConflictStrategy,
+    sourceUrl: '',
+    title: '',
+    body: '',
+    csv: 'author,comment,likes,time,link\nAlice,公众号文章里提到的型号多少钱,8,2026-05-20T10:00:00.000Z,https://mp.weixin.qq.com/s/demo'
+  })
+  const [manualImportPreview, setManualImportPreview] = useState<ManualImportPreview | undefined>()
+  const [cleanupOptions, setCleanupOptions] = useState<PrivacyCleanupOptions>({
+    platformProfiles: false,
+    platformState: true,
+    searchData: true,
+    commentsAndLeads: true,
+    tasks: true,
+    aiSecretBackups: false,
+    auditLogs: false,
+    localLogs: true
+  })
+  const [privacyEstimate, setPrivacyEstimate] = useState<PrivacyCleanupEstimate | undefined>()
+  const [leadExportPreview, setLeadExportPreview] = useState<LeadExportPreview | undefined>()
   const [leadStatus, setLeadStatus] = useState<LeadRecord['status'] | 'all'>('all')
   const [leadKeyword, setLeadKeyword] = useState('')
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([])
@@ -47,7 +84,14 @@ export function App() {
   const resultListRef = useRef<HTMLDivElement | null>(null)
 
   const statusByPlatform = useMemo(() => new Map(statuses.map((status) => [status.platformKey, status])), [statuses])
+  const platformByKey = useMemo(() => new Map(platforms.map((platform) => [platform.key, platform])), [platforms])
   const searchableKeys = useMemo(() => selectedPlatforms, [selectedPlatforms])
+  const visibleConnectorConfigs = useMemo(() => platformConnectorConfigs.filter((config) => {
+    if (connectorErrorFilter === 'all') return true
+    if (connectorErrorFilter === 'failed') return config.lastStatus === 'failed'
+    if (connectorErrorFilter === 'retryable') return config.lastRetryable === true
+    return config.lastErrorCode === connectorErrorFilter
+  }), [connectorErrorFilter, platformConnectorConfigs])
 
   useEffect(() => {
     void refresh()
@@ -61,10 +105,15 @@ export function App() {
 
   useEffect(() => {
     if (platforms.length > 0 && !platformDefaultsReady) {
-      setSelectedPlatforms(platforms.filter((platform) => ['google', 'bing', 'youtube', 'bilibili'].includes(platform.key)).map((platform) => platform.key))
+      setSelectedPlatforms(platforms.filter((platform) => canSearchPlatform(platform) && ['google', 'bing', 'youtube', 'bilibili'].includes(platform.key)).map((platform) => platform.key))
       setPlatformDefaultsReady(true)
     }
   }, [platforms, platformDefaultsReady])
+
+  useEffect(() => {
+    const searchablePlatformKeys = new Set(platforms.filter(canSearchPlatform).map((platform) => platform.key))
+    setSelectedPlatforms((current) => current.filter((key) => searchablePlatformKeys.has(key)))
+  }, [platforms])
 
   useEffect(() => {
     const resultIds = new Set(results.map((result) => result.id))
@@ -92,8 +141,10 @@ export function App() {
 
   async function refresh() {
     try {
-      const [nextPlatforms, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
+      const [nextPlatforms, nextPlatformTargets, nextConnectorConfigs, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
         api.listPlatforms(),
+        api.listPlatformExpansionTargets(),
+        api.listPlatformConnectorConfigs(),
         api.checkPlatformStatuses(),
         api.listTasks(),
         api.listSearchResults(),
@@ -110,6 +161,12 @@ export function App() {
         api.getAIRecoveryAdvice()
       ])
       setPlatforms(nextPlatforms)
+      setPlatformTargets(nextPlatformTargets)
+      setPlatformConnectorConfigs(nextConnectorConfigs)
+      setPlatformConnectorForm((current) => current.platformKey ? current : {
+        ...current,
+        platformKey: nextPlatformTargets[0]?.key ?? ''
+      })
       setStatuses(nextStatuses)
       setTasks(nextTasks)
       setResults(nextResults)
@@ -142,10 +199,16 @@ export function App() {
       setNotice('请至少选择一个搜索平台')
       return
     }
+    const searchablePlatformKeys = new Set(platforms.filter(canSearchPlatform).map((platform) => platform.key))
+    const safeSearchKeys = searchableKeys.filter((key) => searchablePlatformKeys.has(key))
+    if (safeSearchKeys.length === 0) {
+      setNotice('当前选择的平台未开放搜索能力')
+      return
+    }
     setBusy(true)
     try {
       const plan = await api.planSearch(keyword)
-      const nextResults = await api.runSearch({ keyword, platformKeys: searchableKeys })
+      const nextResults = await api.runSearch({ keyword, platformKeys: safeSearchKeys })
       setKeywordPlan(plan)
       setResults(nextResults)
       setSelectedResultIds([])
@@ -187,6 +250,9 @@ export function App() {
 
   async function collect(result: SearchResult) {
     setBusy(true)
+    if (isSingleItemCollectionResult(result, platformByKey)) {
+      setNotice(`${result.platformKey} 属于高风险登录平台，本次仅执行单条低频采集；如出现验证码/警告请立即停止。`)
+    }
     setBatchCollectProgress({
       current: 1,
       total: 1,
@@ -232,6 +298,14 @@ export function App() {
     const selectedResults = results.filter((result) => selectedResultIds.includes(result.id))
     if (selectedResults.length === 0) {
       setNotice('请先框选或勾选要采集的搜索结果')
+      return
+    }
+    const highRiskResults = selectedResults.filter((result) => {
+      const platform = platformByKey.get(result.platformKey)
+      return platform ? !canBatchCollectPlatform(platform) : false
+    })
+    if (highRiskResults.length > 0) {
+      setNotice(`为保护账号，${[...new Set(highRiskResults.map((result) => result.platformKey))].join('、')} 不支持批量评论采集。请只选择单条内容低频采集，出现平台警告后停止。`)
       return
     }
     setBusy(true)
@@ -506,6 +580,20 @@ export function App() {
     }
   }
 
+  async function previewLeadExport() {
+    try {
+      const preview = await api.previewLeadExport({
+        filters: { status: leadStatus, keyword: leadKeyword },
+        fields: ['platformKey', 'nickname', 'text', 'intentLevel', 'confidence', 'score', 'scoreReason', 'suggestedAction', 'status', 'note', 'lastContactedAt', 'nextFollowUpAt', 'createdAt']
+      })
+      setLeadExportPreview(preview)
+      setNotice(`导出预览：${preview.count} 条，样例 ${preview.sampleRows.length} 条`)
+    } catch (error) {
+      setLeadExportPreview(undefined)
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function exportFollowUpCalendar() {
     setBusy(true)
     try {
@@ -545,6 +633,108 @@ export function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function savePlatformConnectorConfig() {
+    if (!platformConnectorForm.platformKey) {
+      setNotice('请选择要配置的平台')
+      return
+    }
+    setBusy(true)
+    try {
+      const importFields = parseCsvFields(platformConnectorForm.importFields)
+      const requiredFields = parseCsvFields(platformConnectorForm.requiredFields)
+      const saved = await api.savePlatformConnectorConfig({
+        platformKey: platformConnectorForm.platformKey,
+        enabled: platformConnectorForm.enabled,
+        apiBaseUrl: platformConnectorForm.apiBaseUrl || undefined,
+        apiKey: platformConnectorForm.apiKey || undefined,
+        quotaPerDay: platformConnectorForm.quotaPerDay,
+        minDelayMs: platformConnectorForm.minDelayMs,
+        importTemplate: importFields.length > 0 ? { fields: importFields, requiredFields } : undefined
+      })
+      setPlatformConnectorConfigs((current) => [
+        ...current.filter((item) => item.platformKey !== saved.platformKey),
+        saved
+      ].sort((a, b) => a.platformKey.localeCompare(b.platformKey)))
+      setPlatformConnectorForm((current) => ({ ...current, apiKey: '' }))
+      setNotice(`平台接入配置已保存：${saved.platformKey}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function importManualContent() {
+    setBusy(true)
+    try {
+      const result = await api.importManualContent({
+        platformKey: manualImportForm.platformKey,
+        templateType: manualImportForm.templateType,
+        conflictStrategy: manualImportForm.conflictStrategy,
+        sourceUrl: manualImportForm.sourceUrl || undefined,
+        title: manualImportForm.title || undefined,
+        body: manualImportForm.body || undefined,
+        csv: manualImportForm.csv || undefined
+      })
+      setComments(await api.listComments())
+      setLeads(await api.listLeads())
+      setTasks(await api.listTasks())
+      setManualImportPreview(undefined)
+      setNotice(`手动导入完成：新增 ${result.commentsImported} 条，跳过 ${result.duplicatesSkipped ?? 0} 条，更新 ${result.duplicatesUpdated ?? 0} 条，线索 ${result.leadsGenerated} 条`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function previewManualContent() {
+    try {
+      const preview = await api.previewManualContent({
+        platformKey: manualImportForm.platformKey,
+        templateType: manualImportForm.templateType,
+        conflictStrategy: manualImportForm.conflictStrategy,
+        sourceUrl: manualImportForm.sourceUrl || undefined,
+        title: manualImportForm.title || undefined,
+        body: manualImportForm.body || undefined,
+        csv: manualImportForm.csv || undefined
+      })
+      setManualImportPreview(preview)
+      setNotice(`导入预览：新评论 ${preview.newComments} 条，重复 ${preview.duplicates} 条，可更新 ${preview.updatableDuplicates} 条`)
+    } catch (error) {
+      setManualImportPreview(undefined)
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function loadManualImportFile(file?: File) {
+    if (!file) return
+    if (file.size > 1_000_000) {
+      setNotice('CSV 文件不能超过 1MB')
+      return
+    }
+    const text = await file.text()
+    setManualImportForm((current) => ({ ...current, csv: text }))
+    setManualImportPreview(undefined)
+    setNotice(`已载入 CSV：${file.name}`)
+  }
+
+  function downloadManualImportTemplate() {
+    const samples: Record<ManualImportTemplateType, string> = {
+      comment_csv: 'nickname,text,likes,published_at,url\r\nAlice,这个多少钱 求链接,8,2026-05-20T10:00:00.000Z,https://example.com/post\r\n',
+      wechat_article_csv: 'author,comment,likes,time,link\r\nAlice,公众号文章里提到的型号多少钱,8,2026-05-20T10:00:00.000Z,https://mp.weixin.qq.com/s/demo\r\n',
+      social_comments_csv: 'username,content,like_count,date,link\r\nAlice,想了解购买渠道,12,2026-05-20T10:00:00.000Z,https://example.com/post\r\n',
+      commerce_reviews_csv: 'buyer,review,likes,created_at,url\r\nAlice,评价不错 想回购,3,2026-05-20T10:00:00.000Z,https://shop.example.com/item/1\r\n'
+    }
+    const content = `\uFEFF${samples[manualImportForm.templateType]}`
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `manual-import-${manualImportForm.templateType}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
   }
 
   async function migrateAISecrets(provider?: AIProviderKey) {
@@ -618,6 +808,41 @@ export function App() {
     }
   }
 
+  async function cleanupPrivacyData() {
+    if (!Object.entries(cleanupOptions).some(([key, value]) => key !== 'platformKeys' && value === true)) {
+      setNotice('请至少选择一项要清理的数据')
+      return
+    }
+    const confirmed = window.confirm('将按所选项清理本机隐私数据。该操作不可撤销，确认继续？')
+    if (!confirmed) return
+    setBusy(true)
+    try {
+      const result = await api.cleanupPrivacyData(cleanupOptions)
+      await refresh()
+      setSelectedResultIds([])
+      setSelectedLeadIds([])
+      setEditingLead(undefined)
+      setEditingLeadDetail(undefined)
+      setPrivacyEstimate(undefined)
+      setNotice(`清理完成：Profile ${result.platformProfilesCleared}，搜索 ${result.searchRowsCleared}，评论/内容 ${result.commentRowsCleared}，线索 ${result.leadRowsCleared}，任务 ${result.taskRowsCleared}，密钥备份 ${result.aiSecretBackupRowsCleared}，日志 ${result.localLogFilesCleared}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function previewPrivacyCleanup() {
+    try {
+      const estimate = await api.previewPrivacyCleanup(cleanupOptions)
+      setPrivacyEstimate(estimate)
+      setNotice(`清理预估：数据库 ${estimate.searchRowsCleared + estimate.commentRowsCleared + estimate.leadRowsCleared + estimate.taskRowsCleared + estimate.auditRowsCleared + estimate.aiSecretBackupRowsCleared + estimate.platformStateRowsCleared} 行，日志 ${estimate.localLogFilesCleared} 个`)
+    } catch (error) {
+      setPrivacyEstimate(undefined)
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
     <main className="shell">
       {notice ? <div className="toastNotice" role="status">{notice}</div> : null}
@@ -683,7 +908,15 @@ export function App() {
                     {statusView.label}
                   </span>
                   <p>{statusView.detail} · {platform.capabilities.join(' / ')}</p>
-                  {platform.capabilities.includes('search') ? (
+                  <div className="platformMeta">
+                    <span className={`riskPill ${platform.riskLevel ?? 'medium'}`}>{platformRiskLabel(platform.riskLevel)}</span>
+                    <span>{platformIntegrationStatusLabel(platform.integrationStatus)}</span>
+                    <span>{platformAuthModeLabel(platform.authMode)}</span>
+                    <span>{platformConnectorLabel(platform.connectorKind)}</span>
+                    <span>间隔 {platform.rateLimit.minDelayMs}ms</span>
+                  </div>
+                  {platform.complianceNotes ? <p className="complianceNote">{platform.complianceNotes}</p> : null}
+                  {canSearchPlatform(platform) ? (
                     <label className="platformSelect">
                       <input
                         checked={searchableKeys.includes(platform.key)}
@@ -693,7 +926,7 @@ export function App() {
                       参与搜索
                     </label>
                   ) : null}
-                  {platform.capabilities.includes('login') && !status?.loggedIn ? (
+                  {canLoginPlatform(platform) && !status?.loggedIn ? (
                     <button className="miniButton" disabled={busy} onClick={() => login(platform.key)}>
                       登录
                     </button>
@@ -701,6 +934,33 @@ export function App() {
                 </article>
                 )
               })}
+            </div>
+          </div> : null}
+
+          {isVisible(selected, 'platforms') ? <div className="panel wide">
+            <div className="panelHead">
+              <h2>待接入路线图</h2>
+              <span>{platformTargets.length} 个目标</span>
+            </div>
+            <div className="platformGrid">
+              {platformTargets.map((platform) => (
+                <article className="platform" key={platform.key}>
+                  <div className="platformHeader">
+                    <strong>{platform.name}</strong>
+                    <small>{platform.category}</small>
+                  </div>
+                  <p>{platform.capabilities.join(' / ') || '能力待定义'} · {platform.domains.join(' / ')}</p>
+                  <div className="platformMeta">
+                    <span className={`riskPill ${platform.riskLevel ?? 'medium'}`}>{platformRiskLabel(platform.riskLevel)}</span>
+                    <span>{platformIntegrationStatusLabel(platform.integrationStatus)}</span>
+                    <span>{platformAuthModeLabel(platform.authMode)}</span>
+                    <span>{platformConnectorLabel(platform.connectorKind)}</span>
+                    <span>间隔 {platform.rateLimit.minDelayMs}ms</span>
+                  </div>
+                  {platform.complianceNotes ? <p className="complianceNote">{platform.complianceNotes}</p> : null}
+                  {platform.roadmapNotes ? <p className="complianceNote">{platform.roadmapNotes}</p> : null}
+                </article>
+              ))}
             </div>
           </div> : null}
 
@@ -833,11 +1093,18 @@ export function App() {
                         <small>{collectProgressByResultId[result.id].message}</small>
                       </div>
                     ) : null}
+                    {isSingleItemCollectionResult(result, platformByKey) ? (
+                      <div className="riskHint">
+                        账号保护：该平台仅支持单条低频采集，触发验证码或官方警告后请停止。
+                      </div>
+                    ) : null}
                     <label className="resultSelect">
                       <input checked={selectedResultIds.includes(result.id)} type="checkbox" onChange={() => toggleResultSelection(result.id)} />
                       选择
                     </label>
-                    <button className="miniButton" disabled={busy} onClick={() => collect(result)}>采集评论</button>
+                    <button className="miniButton" disabled={busy} onClick={() => collect(result)}>
+                      {isSingleItemCollectionResult(result, platformByKey) ? '单条低频采集' : '采集评论'}
+                    </button>
                   </article>
                 ))}
               </div>
@@ -891,8 +1158,18 @@ export function App() {
               />
               <button className="secondary" disabled={busy} onClick={() => refreshLeads()}>筛选</button>
               <button className="secondary" disabled={busy} onClick={analyzeLeads}>重新分析评论</button>
+              <button className="secondary" disabled={busy} onClick={previewLeadExport}>导出预览</button>
               <button className="primary" disabled={busy} onClick={exportLeads}>导出 CSV</button>
             </div>
+            {leadExportPreview ? (
+              <div className="manualImportPreview">
+                <div><strong>{leadExportPreview.count}</strong><span>可导出线索</span></div>
+                <div><strong>{leadExportPreview.fields.length}</strong><span>脱敏字段</span></div>
+                {leadExportPreview.sampleRows.map((row, index) => (
+                  <p key={index}>{leadExportPreview.fields.slice(0, 4).map((field) => `${field}: ${String(row[field] ?? '')}`).join(' / ')}</p>
+                ))}
+              </div>
+            ) : null}
             <div className="bulkBar">
               <span>已选 {selectedLeadIds.length} 条</span>
               <button className="miniButton" disabled={busy || selectedLeadIds.length === 0} onClick={() => bulkUpdate('new')}>批量待跟进</button>
@@ -1138,6 +1415,251 @@ export function App() {
               </div>
             ) : null}
           </div> : null}
+
+          {isVisible(selected, 'settings') ? <div className="panel wide">
+            <div className="panelHead">
+              <h2>平台接入配置</h2>
+              <span>{platformConnectorConfigs.length} 已配置</span>
+            </div>
+            <div className="aiConfig">
+              <select
+                value={platformConnectorForm.platformKey}
+                onChange={(event) => {
+                  const platformKey = event.target.value
+                  const existing = platformConnectorConfigs.find((item) => item.platformKey === platformKey)
+                  setPlatformConnectorForm((current) => ({
+                    ...current,
+                    platformKey,
+                    enabled: existing?.enabled ?? false,
+                    apiBaseUrl: existing?.apiBaseUrl ?? '',
+                    apiKey: '',
+                    quotaPerDay: existing?.quotaPerDay ?? 1000,
+                    minDelayMs: existing?.minDelayMs ?? 1000,
+                    importFields: existing?.importTemplate?.fields.join(',') ?? current.importFields,
+                    requiredFields: existing?.importTemplate?.requiredFields?.join(',') ?? current.requiredFields
+                  }))
+                }}
+              >
+                {platformTargets.map((platform) => <option key={platform.key} value={platform.key}>{platform.name}</option>)}
+              </select>
+              <input
+                value={platformConnectorForm.apiBaseUrl}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, apiBaseUrl: event.target.value }))}
+                placeholder="API Base URL（可选）"
+              />
+              <input
+                value={platformConnectorForm.apiKey}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, apiKey: event.target.value }))}
+                placeholder="API Key 或 env:VAR_NAME（保存后不回显）"
+                type="password"
+              />
+              <input
+                min="1"
+                type="number"
+                value={platformConnectorForm.quotaPerDay}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, quotaPerDay: Number(event.target.value) }))}
+                placeholder="每日配额"
+              />
+              <input
+                min="0"
+                type="number"
+                value={platformConnectorForm.minDelayMs}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, minDelayMs: Number(event.target.value) }))}
+                placeholder="请求间隔 ms"
+              />
+              <input
+                value={platformConnectorForm.importFields}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, importFields: event.target.value }))}
+                placeholder="手动导入字段，逗号分隔"
+              />
+              <input
+                value={platformConnectorForm.requiredFields}
+                onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, requiredFields: event.target.value }))}
+                placeholder="必填字段，逗号分隔"
+              />
+              <label className="switchLine">
+                <input
+                  checked={platformConnectorForm.enabled}
+                  type="checkbox"
+                  onChange={(event) => setPlatformConnectorForm((current) => ({ ...current, enabled: event.target.checked }))}
+                />
+                启用
+              </label>
+              <button className="primary" disabled={busy || !platformConnectorForm.platformKey} onClick={savePlatformConnectorConfig}>保存平台接入配置</button>
+            </div>
+            {platformConnectorConfigs.length > 0 ? (
+              <div className="filterBar">
+                {[
+                  ['all', '全部'],
+                  ['failed', '失败'],
+                  ['quota_exhausted', '配额耗尽'],
+                  ['auth_failed', '认证失败'],
+                  ['rate_limited', '限流'],
+                  ['retryable', '可重试']
+                ].map(([key, label]) => (
+                  <button
+                    className={connectorErrorFilter === key ? 'miniButton active' : 'miniButton'}
+                    key={key}
+                    onClick={() => setConnectorErrorFilter(key as ConnectorErrorFilter)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {visibleConnectorConfigs.length > 0 ? (
+              <div className="providerList">
+                {visibleConnectorConfigs.map((config) => (
+                  <div className="providerRow" key={config.platformKey}>
+                    <strong>{platformTargets.find((platform) => platform.key === config.platformKey)?.name ?? config.platformKey}</strong>
+                    <span>{config.enabled ? '启用' : '停用'}</span>
+                    <span>{config.apiKeySet ? `Key ${config.apiKeyPreview ?? '已配置'}` : '未配置 Key'}</span>
+                    <span>{secretStorageLabel(config.secretStorage)}</span>
+                    <span>{config.quotaPerDay ? `配额 ${config.quotaPerDay}/日` : '未设配额'}</span>
+                    <span>{config.quotaPerDay ? `今日 ${config.usedToday ?? 0}/${config.quotaPerDay}` : `今日 ${config.usedToday ?? 0}`}</span>
+                    <span>{platformConnectorStatusText(config)}</span>
+                    {config.quotaResetAt ? <span>预计重置 {formatDateTime(config.quotaResetAt)}</span> : null}
+                    <span>{config.minDelayMs ?? 0}ms</span>
+                  </div>
+                ))}
+              </div>
+            ) : platformConnectorConfigs.length > 0 ? <div className="emptyState">当前筛选条件下没有平台接入记录</div> : null}
+          </div> : null}
+
+          {isVisible(selected, 'settings') ? <div className="panel wide">
+            <div className="panelHead">
+              <h2>手动内容导入</h2>
+              <span>本地解析</span>
+            </div>
+            <div className="aiConfig">
+              <select
+                value={manualImportForm.platformKey}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, platformKey: event.target.value }))}
+              >
+                {platformTargets
+                  .filter((platform) => platform.connectorKind === 'manual_import' || platform.authMode === 'manual_import')
+                  .map((platform) => <option key={platform.key} value={platform.key}>{platform.name}</option>)}
+              </select>
+              <select
+                value={manualImportForm.templateType}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, templateType: event.target.value as ManualImportTemplateType }))}
+              >
+                <option value="wechat_article_csv">微信公众号文章评论</option>
+                <option value="comment_csv">通用评论 CSV</option>
+                <option value="social_comments_csv">社媒评论 CSV</option>
+                <option value="commerce_reviews_csv">电商评价 CSV</option>
+              </select>
+              <select
+                value={manualImportForm.conflictStrategy}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, conflictStrategy: event.target.value as ManualImportConflictStrategy }))}
+              >
+                <option value="skip_duplicates">重复评论跳过</option>
+                <option value="replace_existing">重复评论更新元数据</option>
+              </select>
+              <input
+                value={manualImportForm.sourceUrl}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, sourceUrl: event.target.value }))}
+                placeholder="文章/商品/帖子链接（可选）"
+              />
+              <input
+                value={manualImportForm.title}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="标题（可选）"
+              />
+              <textarea
+                value={manualImportForm.body}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, body: event.target.value }))}
+                placeholder="正文摘要（可选，不联网抓取）"
+                rows={4}
+              />
+              <textarea
+                value={manualImportForm.csv}
+                onChange={(event) => setManualImportForm((current) => ({ ...current, csv: event.target.value }))}
+                placeholder="评论 CSV：nickname,text,likes,published_at,url"
+                rows={6}
+              />
+              <label className="filePickButton">
+                选择 CSV
+                <input accept=".csv,text/csv" type="file" onChange={(event) => void loadManualImportFile(event.target.files?.[0])} />
+              </label>
+              <button className="miniButton inline" disabled={busy} onClick={downloadManualImportTemplate}>下载模板</button>
+              <button className="miniButton inline" disabled={busy || !manualImportForm.platformKey} onClick={previewManualContent}>导入预览</button>
+              <button className="primary" disabled={busy || !manualImportForm.platformKey} onClick={importManualContent}>导入并分析</button>
+            </div>
+            {manualImportPreview ? (
+              <div className="manualImportPreview">
+                <div><strong>{manualImportPreview.parsedComments}</strong><span>解析评论</span></div>
+                <div><strong>{manualImportPreview.newComments}</strong><span>新评论</span></div>
+                <div><strong>{manualImportPreview.duplicates}</strong><span>重复跳过</span></div>
+                <div><strong>{manualImportPreview.updatableDuplicates}</strong><span>可更新</span></div>
+                <div><strong>{manualImportPreview.content.title || manualImportPreview.content.contentId}</strong><span>内容标识</span></div>
+                {manualImportPreview.sampleComments.map((comment, index) => (
+                  <p key={`${comment.nickname}-${index}`}>{comment.nickname ?? '手动导入用户'}：{comment.text}</p>
+                ))}
+              </div>
+            ) : null}
+          </div> : null}
+
+          {isVisible(selected, 'settings') ? <div className="panel wide">
+            <div className="panelHead">
+              <h2>隐私与本机数据</h2>
+              <span>本机清理</span>
+            </div>
+            <div className="privacyGrid">
+              {[
+                ['platformProfiles', '平台登录态/Profile'] as const,
+                ['platformState', '平台状态与账号保护'] as const,
+                ['searchData', '搜索会话与结果'] as const,
+                ['commentsAndLeads', '内容、评论与线索'] as const,
+                ['tasks', '任务记录'] as const,
+                ['aiSecretBackups', 'AI 密钥备份'] as const,
+                ['auditLogs', '审计日志'] as const,
+                ['localLogs', '本地日志文件'] as const
+              ].map(([key, label]) => (
+                <label className="cleanupOption" key={key}>
+                  <input
+                    checked={cleanupOptions[key] === true}
+                    type="checkbox"
+                    onChange={(event) => setCleanupOptions((current) => ({ ...current, [key]: event.target.checked }))}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+            <div className="cleanupPlatforms">
+              <strong>限定平台 Profile</strong>
+              <div className="platformChipList">
+                {platforms.map((platform) => {
+                  const selectedProfiles = cleanupOptions.platformKeys ?? []
+                  return (
+                    <label className="platformChip" key={platform.key}>
+                      <input
+                        checked={selectedProfiles.includes(platform.key)}
+                        type="checkbox"
+                        onChange={(event) => setCleanupOptions((current) => {
+                          const currentKeys = current.platformKeys ?? []
+                          const nextKeys = event.target.checked
+                            ? [...new Set([...currentKeys, platform.key])]
+                            : currentKeys.filter((key) => key !== platform.key)
+                          return { ...current, platformKeys: nextKeys.length ? nextKeys : undefined }
+                        })}
+                      />
+                      <span>{platform.name}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="dangerZone">
+              <strong>危险操作</strong>
+              <span>清理后无法恢复。若选择平台登录态，后续需要重新扫码或密码登录对应平台。</span>
+              {privacyEstimate ? (
+                <span>预估：Profile {privacyEstimate.platformProfilesFound} 个，搜索 {privacyEstimate.searchRowsCleared} 行，评论/内容 {privacyEstimate.commentRowsCleared} 行，线索 {privacyEstimate.leadRowsCleared} 行，日志 {privacyEstimate.localLogFilesCleared} 个 / {Math.round(privacyEstimate.localLogBytesCleared / 1024)}KB。</span>
+              ) : null}
+              <button className="secondary" disabled={busy} onClick={previewPrivacyCleanup}>清理预估</button>
+              <button className="dangerButton" disabled={busy} onClick={cleanupPrivacyData}>清理所选数据</button>
+            </div>
+          </div> : null}
         </section>
       </section>
     </main>
@@ -1202,6 +1724,11 @@ function resultCollectStatusLabel(status: ResultCollectProgress['status']): stri
   return '失败'
 }
 
+function isSingleItemCollectionResult(result: SearchResult, platformByKey: Map<string, PlatformSpec>): boolean {
+  const platform = platformByKey.get(result.platformKey)
+  return platform ? requiresSingleItemCollection(platform) : false
+}
+
 function followUpLabel(status: FollowUpReminder['status'], daysUntilDue: number): string {
   if (status === 'overdue') return daysUntilDue <= -1 ? `逾期 ${Math.abs(daysUntilDue)} 天` : '已逾期'
   if (status === 'today') return '今日跟进'
@@ -1237,6 +1764,42 @@ function platformStatusView(platform: PlatformSpec, status?: PlatformStatus): { 
   return { label: '可直搜', tone: 'ok', detail: `${latency} · ${status.message}` }
 }
 
+function platformRiskLabel(risk?: PlatformSpec['riskLevel']): string {
+  if (risk === 'low') return '低风险'
+  if (risk === 'high') return '高风险'
+  return '中风险'
+}
+
+function platformIntegrationStatusLabel(status?: PlatformSpec['integrationStatus']): string {
+  if (status === 'active') return '已接入'
+  if (status === 'planned') return '计划接入'
+  if (status === 'manual_import') return '手动导入'
+  if (status === 'official_api_preferred') return 'API 优先'
+  return '未标注接入状态'
+}
+
+function platformAuthModeLabel(authMode?: PlatformSpec['authMode']): string {
+  if (authMode === 'none') return '无需登录'
+  if (authMode === 'optional_login') return '可选登录'
+  if (authMode === 'required_login') return '需登录'
+  if (authMode === 'api_key') return 'API Key'
+  if (authMode === 'manual_import') return '手动导入'
+  return '未标注登录方式'
+}
+
+function platformConnectorLabel(kind?: PlatformSpec['connectorKind']): string {
+  if (kind === 'official_api') return '官方 API'
+  if (kind === 'public_web') return '公开网页'
+  if (kind === 'logged_in_web') return '登录网页'
+  if (kind === 'manual_import') return '手动导入'
+  if (kind === 'hybrid') return '混合接入'
+  return '未标注接入'
+}
+
+function parseCsvFields(value: string): string[] {
+  return [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
 function taskInputUrl(input: unknown): string | undefined {
   if (!input || typeof input !== 'object' || !('url' in input)) return undefined
   const value = (input as { url?: unknown }).url
@@ -1251,6 +1814,32 @@ function taskRecoveryAdvice(errorCode: Task['errorCode']): string {
   if (errorCode === 'content_not_found') return '建议确认链接是否仍可访问。'
   if (errorCode === 'unsupported') return '该内容暂不支持采集，建议更换内容或确认评论区可访问。'
   return '建议稍后重试，或检查网络和平台状态。'
+}
+
+function platformConnectorStatusText(config: PlatformConnectorPublicConfig): string {
+  if (config.lastStatus === 'ok') return '最近成功'
+  if (config.lastStatus !== 'failed') return '暂无调用'
+  const code = connectorErrorCodeLabel(config.lastErrorCode)
+  const retry = config.lastRetryable === true ? '可重试' : '需处理'
+  const message = config.lastError ? `：${config.lastError}` : ''
+  return `${code} · ${retry}${message}`
+}
+
+function connectorErrorCodeLabel(code?: string): string {
+  if (code === 'invalid_request') return '参数无效'
+  if (code === 'auth_failed') return '认证失败'
+  if (code === 'permission_denied') return '权限不足'
+  if (code === 'quota_exhausted') return '配额耗尽'
+  if (code === 'rate_limited') return '请求限流'
+  if (code === 'server_error') return '服务异常'
+  if (code === 'network_error') return '网络异常'
+  return '失败'
+}
+
+function formatDateTime(value: string): string {
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) return value
+  return parsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 function secretStorageLabel(storage: AIProviderPublicConfig['secretStorage']): string {

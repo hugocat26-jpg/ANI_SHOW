@@ -19,7 +19,7 @@ const mainBuild = {
   platform: 'node',
   target: 'node24',
   format: 'esm',
-  sourcemap: true,
+  sourcemap: false,
   external: commonExternal
 }
 
@@ -37,7 +37,7 @@ await build({
   platform: 'node',
   target: 'node24',
   format: 'cjs',
-  sourcemap: true,
+  sourcemap: false,
   external: commonExternal,
   entryPoints: [path.join(root, 'apps/desktop/src/preload/index.ts')],
   outfile: path.join(desktopDist, 'preload/index.cjs')

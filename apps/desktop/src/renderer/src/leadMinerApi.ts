@@ -1,13 +1,18 @@
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ModelPricingView, PlatformLoginResult, PlatformSpec, PlatformStatus, SearchResult, Task } from '../../../../../packages/core/src/index'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportPreview, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ManualImportInput, ManualImportPreview, ManualImportResult, ModelPricingView, PlatformConnectorConfig, PlatformConnectorPublicConfig, PlatformLoginResult, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, PrivacyCleanupResult, SearchResult, Task } from '../../../../../packages/core/src/index'
 
 export interface LeadMinerApi {
   listPlatforms(): Promise<PlatformSpec[]>
+  listPlatformExpansionTargets(): Promise<PlatformSpec[]>
+  listPlatformConnectorConfigs(): Promise<PlatformConnectorPublicConfig[]>
+  savePlatformConnectorConfig(input: Omit<PlatformConnectorConfig, 'updatedAt'>): Promise<PlatformConnectorPublicConfig>
   checkPlatformStatuses(): Promise<PlatformStatus[]>
   loginPlatform(platformKey: string): Promise<PlatformLoginResult>
   planSearch(keyword: string): Promise<KeywordPlan>
   runSearch(input: { keyword: string; platformKeys: string[] }): Promise<SearchResult[]>
   listSearchResults(): Promise<SearchResult[]>
   collectComments(input: { platformKey: string; url: string }): Promise<CommentRecord[]>
+  previewManualContent(input: ManualImportInput): Promise<ManualImportPreview>
+  importManualContent(input: ManualImportInput): Promise<ManualImportResult>
   listComments(contentId?: string): Promise<CommentRecord[]>
   listLeads(filters?: LeadFilters): Promise<LeadRecord[]>
   getLeadDetail(id: string): Promise<LeadDetail>
@@ -18,6 +23,7 @@ export interface LeadMinerApi {
   updateLeadStatus(input: { id: string; status: LeadRecord['status'] }): Promise<LeadRecord>
   updateLead(input: { id: string; patch: LeadUpdateInput }): Promise<LeadRecord>
   bulkUpdateLeadStatus(input: { ids: string[]; status: LeadRecord['status'] }): Promise<LeadRecord[]>
+  previewLeadExport(input?: LeadExportOptions): Promise<LeadExportPreview>
   exportLeads(input?: LeadExportOptions): Promise<LeadExportResult>
   exportLeadsToFile?(input?: LeadExportOptions): Promise<{ canceled: boolean; filePath?: string; count: number }>
   listAuditLogs(limit?: number): Promise<AuditEvent[]>
@@ -37,6 +43,8 @@ export interface LeadMinerApi {
   getAIRecoveryAdvice(): Promise<AIRecoveryAdvice>
   notifyFollowUps?(input: { overdue: number; today: number }): Promise<{ shown: boolean }>
   notifyAIRecovery?(input: AIRecoveryAdvice): Promise<{ shown: boolean }>
+  previewPrivacyCleanup(input: PrivacyCleanupOptions): Promise<PrivacyCleanupEstimate>
+  cleanupPrivacyData(input: PrivacyCleanupOptions): Promise<PrivacyCleanupResult>
   listTasks(): Promise<Task[]>
 }
 
@@ -54,6 +62,62 @@ export const fallbackApi: LeadMinerApi = {
       { key: 'douyin', name: '抖音', category: 'video', domains: ['douyin.com'], loginUrl: 'https://www.douyin.com/', requiresLogin: true, capabilities: ['search', 'login', 'status', 'comments'], rateLimit: { concurrency: 1, minDelayMs: 1500, maxRetries: 2 } },
       { key: 'xiaohongshu', name: '小红书', category: 'social', domains: ['xiaohongshu.com'], loginUrl: 'https://www.xiaohongshu.com/explore', requiresLogin: true, capabilities: ['search', 'login', 'status', 'comments'], rateLimit: { concurrency: 1, minDelayMs: 1500, maxRetries: 2 } }
     ]
+  },
+  async listPlatformExpansionTargets() {
+    return [
+      {
+        key: 'google_custom_search_api',
+        name: 'Google Custom Search API',
+        category: 'search_engine',
+        domains: ['googleapis.com'],
+        requiresLogin: false,
+        capabilities: ['search', 'status'],
+        rateLimit: { concurrency: 2, minDelayMs: 300, maxRetries: 2 },
+        authMode: 'api_key',
+        riskLevel: 'low',
+        connectorKind: 'official_api',
+        integrationStatus: 'official_api_preferred',
+        complianceNotes: '官方 API 优先，需用户配置 API Key。',
+        roadmapNotes: '用于替代公开搜索页抓取。'
+      },
+      {
+        key: 'wechat_official_account',
+        name: '微信公众号/文章',
+        category: 'social',
+        domains: ['mp.weixin.qq.com'],
+        requiresLogin: false,
+        capabilities: ['parse_content'],
+        rateLimit: { concurrency: 1, minDelayMs: 2000, maxRetries: 1 },
+        authMode: 'manual_import',
+        riskLevel: 'medium',
+        connectorKind: 'manual_import',
+        integrationStatus: 'manual_import',
+        complianceNotes: '优先粘贴公开文章链接或导入授权数据。',
+        roadmapNotes: '适合作为内容解析和线索文本抽取入口。'
+      }
+    ]
+  },
+  async listPlatformConnectorConfigs() {
+    return []
+  },
+  async savePlatformConnectorConfig(input) {
+    return {
+      platformKey: input.platformKey,
+      enabled: input.enabled,
+      apiBaseUrl: input.apiBaseUrl,
+      apiKeySet: Boolean(input.apiKey),
+      apiKeyPreview: input.apiKey?.startsWith('env:') ? input.apiKey : input.apiKey ? `...${input.apiKey.slice(-4)}` : undefined,
+      secretStorage: input.apiKey?.startsWith('env:') ? 'external_env' : input.apiKey ? 'legacy_plain' : 'none',
+      quotaPerDay: input.quotaPerDay,
+      minDelayMs: input.minDelayMs,
+      importTemplate: input.importTemplate,
+      usedToday: 0,
+      remainingToday: input.quotaPerDay,
+      lastErrorCode: undefined,
+      lastRetryable: undefined,
+      quotaResetAt: undefined,
+      updatedAt: new Date().toISOString()
+    }
   },
   async checkPlatformStatuses() {
     const platforms = await fallbackApi.listPlatforms()
@@ -114,6 +178,40 @@ export const fallbackApi: LeadMinerApi = {
       collectedAt: now
     }]
   },
+  async previewManualContent(input) {
+    const comments = input.csv ? Math.max(0, input.csv.split(/\r?\n/).length - 1) : input.comments?.length ?? 0
+    return {
+      content: {
+        platformKey: input.platformKey,
+        url: input.sourceUrl ?? `manual://${input.platformKey}/preview`,
+        contentId: `manual-preview-${Date.now()}`,
+        contentType: input.platformKey === 'wechat_official_account' ? 'post' : 'unknown',
+        title: input.title
+      },
+      templateType: input.templateType ?? 'comment_csv',
+      conflictStrategy: input.conflictStrategy ?? 'skip_duplicates',
+      parsedComments: comments,
+      newComments: comments,
+      duplicates: 0,
+      updatableDuplicates: 0,
+      sampleComments: input.comments?.slice(0, 5) ?? []
+    }
+  },
+  async importManualContent(input) {
+    return {
+      content: {
+        platformKey: input.platformKey,
+        url: input.sourceUrl ?? `manual://${input.platformKey}/preview`,
+        contentId: `manual-preview-${Date.now()}`,
+        contentType: input.platformKey === 'wechat_official_account' ? 'post' : 'unknown',
+        title: input.title
+      },
+      commentsImported: input.comments?.length ?? (input.csv ? Math.max(0, input.csv.split(/\r?\n/).length - 1) : 0),
+      duplicatesSkipped: 0,
+      duplicatesUpdated: 0,
+      leadsGenerated: 0
+    }
+  },
   async listComments() {
     return []
   },
@@ -145,6 +243,10 @@ export const fallbackApi: LeadMinerApi = {
   },
   async bulkUpdateLeadStatus() {
     return []
+  },
+  async previewLeadExport(input) {
+    const fields = input?.fields ?? ['platformKey', 'nickname', 'text', 'score', 'status']
+    return { count: 0, fields, sampleRows: [] }
   },
   async exportLeads() {
     return {
@@ -231,6 +333,35 @@ export const fallbackApi: LeadMinerApi = {
   },
   async getAIRecoveryAdvice() {
     return { severity: 'info', title: '暂无 AI 分析统计', actions: ['完成一次批量分析后查看恢复建议。'] }
+  },
+  async cleanupPrivacyData() {
+    return {
+      platformProfilesCleared: 0,
+      platformStateRowsCleared: 0,
+      searchRowsCleared: 0,
+      commentRowsCleared: 0,
+      leadRowsCleared: 0,
+      taskRowsCleared: 0,
+      auditRowsCleared: 0,
+      aiSecretBackupRowsCleared: 0,
+      localLogFilesCleared: 0,
+      localLogBytesCleared: 0
+    }
+  },
+  async previewPrivacyCleanup() {
+    return {
+      platformProfilesFound: 0,
+      platformProfilesCleared: 0,
+      platformStateRowsCleared: 0,
+      searchRowsCleared: 0,
+      commentRowsCleared: 0,
+      leadRowsCleared: 0,
+      taskRowsCleared: 0,
+      auditRowsCleared: 0,
+      aiSecretBackupRowsCleared: 0,
+      localLogFilesCleared: 0,
+      localLogBytesCleared: 0
+    }
   },
   async listTasks() {
     return []

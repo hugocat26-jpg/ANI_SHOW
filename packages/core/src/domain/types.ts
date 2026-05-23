@@ -30,6 +30,7 @@ export type TaskType =
   | 'parse_content'
   | 'collect_comments'
   | 'analyze_leads'
+  | 'manual_import'
   | 'export'
 
 export type IntentLevel = 'high' | 'medium' | 'low' | 'none'
@@ -40,6 +41,11 @@ export interface RateLimitPolicy {
   maxRetries: number
 }
 
+export type PlatformAuthMode = 'none' | 'optional_login' | 'required_login' | 'api_key' | 'manual_import'
+export type PlatformRiskLevel = 'low' | 'medium' | 'high'
+export type PlatformConnectorKind = 'official_api' | 'public_web' | 'logged_in_web' | 'manual_import' | 'hybrid'
+export type PlatformIntegrationStatus = 'active' | 'planned' | 'manual_import' | 'official_api_preferred'
+
 export interface PlatformSpec {
   key: string
   name: string
@@ -49,6 +55,12 @@ export interface PlatformSpec {
   requiresLogin: boolean
   capabilities: PlatformCapability[]
   rateLimit: RateLimitPolicy
+  authMode?: PlatformAuthMode
+  riskLevel?: PlatformRiskLevel
+  connectorKind?: PlatformConnectorKind
+  integrationStatus?: PlatformIntegrationStatus
+  complianceNotes?: string
+  roadmapNotes?: string
 }
 
 export interface PlatformStatus {
@@ -59,6 +71,13 @@ export interface PlatformStatus {
   checkedAt: string
   errorCode: PlatformErrorCode
   message: string
+}
+
+export interface PlatformProtection {
+  platformKey: string
+  pausedUntil: string
+  reason: string
+  createdAt: string
 }
 
 export interface SearchInput {
@@ -95,6 +114,47 @@ export interface CommentRecord {
   likes: number
   publishedAt: string
   collectedAt: string
+}
+
+export interface ManualImportCommentInput {
+  nickname?: string
+  text: string
+  likes?: number
+  publishedAt?: string
+  contentUrl?: string
+}
+
+export type ManualImportTemplateType = 'comment_csv' | 'wechat_article_csv' | 'social_comments_csv' | 'commerce_reviews_csv'
+export type ManualImportConflictStrategy = 'skip_duplicates' | 'replace_existing'
+
+export interface ManualImportInput {
+  platformKey: string
+  sourceUrl?: string
+  title?: string
+  body?: string
+  templateType?: ManualImportTemplateType
+  conflictStrategy?: ManualImportConflictStrategy
+  comments?: ManualImportCommentInput[]
+  csv?: string
+}
+
+export interface ManualImportResult {
+  content: ContentRef
+  commentsImported: number
+  duplicatesSkipped?: number
+  duplicatesUpdated?: number
+  leadsGenerated: number
+}
+
+export interface ManualImportPreview {
+  content: ContentRef
+  templateType: ManualImportTemplateType
+  conflictStrategy: ManualImportConflictStrategy
+  parsedComments: number
+  newComments: number
+  duplicates: number
+  updatableDuplicates: number
+  sampleComments: ManualImportCommentInput[]
 }
 
 export interface KeywordPlan {
@@ -206,6 +266,12 @@ export interface LeadExportResult {
   fields: string[]
 }
 
+export interface LeadExportPreview {
+  count: number
+  fields: string[]
+  sampleRows: Array<Record<string, unknown>>
+}
+
 export type FollowUpReminderStatus = 'overdue' | 'today' | 'upcoming'
 
 export interface FollowUpReminder {
@@ -267,6 +333,74 @@ export interface AISecretBackup {
   secretStorage: AIProviderPublicConfig['secretStorage']
   apiKeySet: boolean
   createdAt: string
+}
+
+export interface ManualImportTemplate {
+  fields: string[]
+  requiredFields?: string[]
+  sample?: string
+}
+
+export interface PlatformConnectorConfig {
+  platformKey: string
+  enabled: boolean
+  apiBaseUrl?: string
+  apiKey?: string
+  quotaPerDay?: number
+  minDelayMs?: number
+  importTemplate?: ManualImportTemplate
+  updatedAt: string
+}
+
+export interface PlatformConnectorPublicConfig {
+  platformKey: string
+  enabled: boolean
+  apiBaseUrl?: string
+  apiKeySet: boolean
+  apiKeyPreview?: string
+  secretStorage: AIProviderPublicConfig['secretStorage']
+  quotaPerDay?: number
+  minDelayMs?: number
+  importTemplate?: ManualImportTemplate
+  usageDate?: string
+  usedToday?: number
+  remainingToday?: number
+  lastStatus?: 'ok' | 'failed'
+  lastError?: string
+  lastErrorCode?: string
+  lastRetryable?: boolean
+  quotaResetAt?: string
+  lastRequestAt?: string
+  updatedAt: string
+}
+
+export interface PrivacyCleanupOptions {
+  platformProfiles?: boolean
+  platformKeys?: string[]
+  platformState?: boolean
+  searchData?: boolean
+  commentsAndLeads?: boolean
+  tasks?: boolean
+  auditLogs?: boolean
+  aiSecretBackups?: boolean
+  localLogs?: boolean
+}
+
+export interface PrivacyCleanupResult {
+  platformProfilesCleared: number
+  platformStateRowsCleared: number
+  searchRowsCleared: number
+  commentRowsCleared: number
+  leadRowsCleared: number
+  taskRowsCleared: number
+  auditRowsCleared: number
+  aiSecretBackupRowsCleared: number
+  localLogFilesCleared: number
+  localLogBytesCleared: number
+}
+
+export interface PrivacyCleanupEstimate extends PrivacyCleanupResult {
+  platformProfilesFound: number
 }
 
 export interface Task {

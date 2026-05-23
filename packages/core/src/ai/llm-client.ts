@@ -1,6 +1,7 @@
 import type { AIAnalysisContext, CommentInput, IntentResult } from '../domain/types.ts'
 import { AIProviderError, codeFromHttpStatus } from './ai-errors.ts'
 import { buildIntentAnalysisPrompt } from './prompt-templates.ts'
+import { effectiveAIProviderBaseUrl } from './provider-url.ts'
 
 export interface LLMClient {
   analyzeIntent(comment: CommentInput, context: AIAnalysisContext): Promise<IntentResult>
@@ -9,7 +10,7 @@ export interface LLMClient {
 export class OpenAICompatibleLLMClient implements LLMClient {
   async analyzeIntent(comment: CommentInput, context: AIAnalysisContext): Promise<IntentResult> {
     if (!context.apiKey) throw new AIProviderError('missing_api_key', 'AI Provider 未配置 API Key', { retryable: false })
-    const baseUrl = (context.provider.baseUrl || defaultBaseUrl(context.provider.provider)).replace(/\/$/, '')
+    const baseUrl = effectiveAIProviderBaseUrl(context.provider.provider, context.provider.baseUrl)
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -54,11 +55,4 @@ export function normalizeIntentResult(value: Partial<IntentResult>): IntentResul
     keywords,
     reason: value.reason ? String(value.reason) : '模型未提供原因'
   }
-}
-
-function defaultBaseUrl(provider: AIAnalysisContext['provider']['provider']): string {
-  if (provider === 'openai') return 'https://api.openai.com/v1'
-  if (provider === 'deepseek') return 'https://api.deepseek.com/v1'
-  if (provider === 'dashscope') return 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-  return 'https://api.openai.com/v1'
 }

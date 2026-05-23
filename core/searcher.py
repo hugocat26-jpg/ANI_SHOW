@@ -9,6 +9,7 @@
 - 三层降级：平台直搜 → Bing 站内搜 → Bing 宽泛搜
 """
 import re
+import os
 import time
 import random
 import threading
@@ -51,6 +52,14 @@ _PLATFORM_COOKIE_DOMAINS = {
     "instagram": ("instagram.com",),
     "facebook": ("facebook.com", "fb.com", "fb.watch"),
 }
+
+
+def _browser_security_args() -> list[str]:
+    args: list[str] = []
+    if os.environ.get("CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX") == "1":
+        Logger().warning("高风险兼容开关已启用: CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX=1")
+        args.append("--no-sandbox")
+    return args
 
 # ==================== 反检测脚本（与 BaseScraper 一致）====================
 
@@ -221,7 +230,7 @@ def login_search_platform(platform: str, timeout_ms: int = 600000) -> None:
             user_data_dir=str(_SEARCH_PROFILE_DIR),
             headless=False,
             channel="msedge",
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            args=["--disable-blink-features=AutomationControlled", *_browser_security_args()],
             viewport={"width": 1280, "height": 900},
             locale="zh-CN",
         )
@@ -1411,9 +1420,9 @@ class SearchManager:
                     self.log_callback("INFO", "当前平台需要可见浏览器，搜索窗口会自动打开并在结束后关闭")
                 launch_args = [
                     "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
                     "--disable-dev-shm-usage",
                 ]
+                launch_args.extend(_browser_security_args())
                 if headless:
                     launch_args.append("--disable-gpu")
                 context = pw.chromium.launch_persistent_context(

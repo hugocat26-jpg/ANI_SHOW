@@ -14,19 +14,50 @@ import type {
   LeadDetail,
   LeadRecord,
   LeadUpdateInput,
+  PlatformConnectorConfig,
+  PlatformConnectorPublicConfig,
+  PlatformProtection,
   PlatformStatus,
   SearchResult,
   Task
 } from '../domain/types.ts'
 import type { ModelPricingView } from '../ai/model-pricing.ts'
 import { normalizeCustomPricing } from '../ai/model-pricing.ts'
+import { normalizeAIProviderBaseUrl } from '../ai/provider-url.ts'
 import { PlainSecretCodec, type SecretCodec } from '../security/secret-codec.ts'
+
+const MAX_AI_SECRET_BACKUPS_PER_PROVIDER = 5
+const PLATFORM_CONNECTOR_CONFIGS_KEY = 'platform.connector_configs'
+const PLATFORM_CONNECTOR_USAGE_KEY = 'platform.connector_usage'
 
 export interface SearchSessionRecord {
   id: string
   keyword: string
   platformKeys: string[]
   createdAt: string
+}
+
+interface StoredPlatformConnectorConfig {
+  platformKey: string
+  enabled: boolean
+  apiBaseUrl?: string
+  apiKey?: string
+  quotaPerDay?: number
+  minDelayMs?: number
+  importTemplate?: PlatformConnectorConfig['importTemplate']
+  updatedAt: string
+}
+
+interface StoredPlatformConnectorUsage {
+  platformKey: string
+  date: string
+  usedToday: number
+  lastStatus: 'ok' | 'failed'
+  lastError?: string
+  lastErrorCode?: string
+  lastRetryable?: boolean
+  quotaResetAt?: string
+  lastRequestAt: string
 }
 
 function json(value: unknown): string {
@@ -189,6 +220,13 @@ export class LeadMinerRepository {
         secret_storage TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS platform_protections (
+        platform_key TEXT PRIMARY KEY,
+        paused_until TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `)
     this.addColumnIfMissing('leads', 'note', 'TEXT')
     this.addColumnIfMissing('leads', 'last_contacted_at', 'TEXT')
@@ -237,6 +275,52 @@ export class LeadMinerRepository {
       errorCode: String(row.error_code) as PlatformStatus['errorCode'],
       message: String(row.message)
     }))
+  }
+
+  savePlatformProtection(protection: PlatformProtection): void {
+    this.db.prepare(`
+      INSERT INTO platform_protections (
+        platform_key, paused_until, reason, created_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(platform_key) DO UPDATE SET
+        paused_until = excluded.paused_until,
+        reason = excluded.reason,
+        created_at = excluded.created_at
+    `).run(
+      protection.platformKey,
+      protection.pausedUntil,
+      protection.reason,
+      protection.createdAt
+    )
+  }
+
+  deletePlatformProtection(platformKey: string): void {
+    this.db.prepare('DELETE FROM platform_protections WHERE platform_key = ?').run(platformKey)
+  }
+
+  listPlatformProtections(now = new Date()): PlatformProtection[] {
+    const rows = this.db.prepare('SELECT * FROM platform_protections ORDER BY platform_key').all() as Array<Record<string, unknown>>
+    const active: PlatformProtection[] = []
+    for (const row of rows) {
+      const protection = {
+        platformKey: String(row.platform_key),
+        pausedUntil: String(row.paused_until),
+        reason: String(row.reason),
+        createdAt: String(row.created_at)
+      }
+      if (Date.parse(protection.pausedUntil) <= now.getTime()) {
+        this.deletePlatformProtection(protection.platformKey)
+      } else {
+        active.push(protection)
+      }
+    }
+    return active
+  }
+
+  clearPlatformState(): number {
+    const statuses = runChanges(this.db.prepare('DELETE FROM platform_statuses').run())
+    const protections = runChanges(this.db.prepare('DELETE FROM platform_protections').run())
+    return statuses + protections
   }
 
   createSearchSession(keyword: string, platformKeys: string[]): SearchSessionRecord {
@@ -288,6 +372,23 @@ export class LeadMinerRepository {
     }))
   }
 
+  clearSearchData(): number {
+    this.db.exec('BEGIN')
+    try {
+      const results = runChanges(this.db.prepare('DELETE FROM search_results').run())
+      const sessions = runChanges(this.db.prepare('DELETE FROM search_sessions').run())
+      this.db.exec('COMMIT')
+      return results + sessions
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  countSearchData(): number {
+    return this.countRows('search_results') + this.countRows('search_sessions')
+  }
+
   saveContent(content: ContentRef): void {
     this.db.prepare(`
       INSERT INTO contents (
@@ -335,6 +436,28 @@ export class LeadMinerRepository {
       ? this.db.prepare('SELECT * FROM comments WHERE content_id = ? ORDER BY collected_at DESC').all(contentId)
       : this.db.prepare('SELECT * FROM comments ORDER BY collected_at DESC').all()
     return (rows as Array<Record<string, unknown>>).map((row) => this.mapComment(row))
+  }
+
+  clearCommentsAndLeads(): { comments: number; leads: number; contents: number } {
+    this.db.exec('BEGIN')
+    try {
+      const leads = runChanges(this.db.prepare('DELETE FROM leads').run())
+      const comments = runChanges(this.db.prepare('DELETE FROM comments').run())
+      const contents = runChanges(this.db.prepare('DELETE FROM contents').run())
+      this.db.exec('COMMIT')
+      return { comments, leads, contents }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  countCommentsAndLeads(): { comments: number; leads: number; contents: number } {
+    return {
+      comments: this.countRows('comments'),
+      leads: this.countRows('leads'),
+      contents: this.countRows('contents')
+    }
   }
 
   saveLead(lead: LeadRecord): void {
@@ -523,6 +646,14 @@ export class LeadMinerRepository {
     }))
   }
 
+  clearAuditLogs(): number {
+    return runChanges(this.db.prepare('DELETE FROM audit_logs').run())
+  }
+
+  countAuditLogs(): number {
+    return this.countRows('audit_logs')
+  }
+
   saveAIProviderConfig(config: AIProviderConfig): AIProviderPublicConfig {
     const existingStoredApiKey = this.getStoredAIProviderSecret(config.provider)
     const apiKey = config.apiKey === undefined ? undefined : config.apiKey.trim()
@@ -543,7 +674,7 @@ export class LeadMinerRepository {
     `).run(
       config.provider,
       config.model.trim(),
-      config.baseUrl?.trim() || null,
+      normalizeAIProviderBaseUrl(config.provider, config.baseUrl) ?? null,
       storedApiKey,
       config.enabled ? 1 : 0,
       config.updatedAt
@@ -592,6 +723,78 @@ export class LeadMinerRepository {
     return normalizeCustomPricing(parseJson<ModelPricingView[]>(String(row.value)))
   }
 
+  savePlatformConnectorConfig(config: PlatformConnectorConfig): PlatformConnectorPublicConfig {
+    const configs = this.readStoredPlatformConnectorConfigs()
+    const existing = configs.find((item) => item.platformKey === config.platformKey)
+    const next: StoredPlatformConnectorConfig = {
+      platformKey: config.platformKey,
+      enabled: config.enabled === true,
+      apiBaseUrl: config.apiBaseUrl?.trim() || undefined,
+      apiKey: normalizeStoredSecret(config.apiKey, existing?.apiKey, this.secretCodec),
+      quotaPerDay: normalizeOptionalInteger(config.quotaPerDay, 1, 1_000_000),
+      minDelayMs: normalizeOptionalInteger(config.minDelayMs, 0, 86_400_000),
+      importTemplate: normalizeImportTemplate(config.importTemplate),
+      updatedAt: config.updatedAt
+    }
+    const merged = [
+      ...configs.filter((item) => item.platformKey !== config.platformKey),
+      next
+    ].sort((a, b) => a.platformKey.localeCompare(b.platformKey))
+    this.db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `).run(PLATFORM_CONNECTOR_CONFIGS_KEY, json(merged), new Date().toISOString())
+    return this.mapPlatformConnectorConfig(next)
+  }
+
+  listPlatformConnectorConfigs(): PlatformConnectorPublicConfig[] {
+    return this.readStoredPlatformConnectorConfigs().map((config) => this.mapPlatformConnectorConfig(config))
+  }
+
+  recordPlatformConnectorUsage(platformKey: string, status: 'ok' | 'failed', message?: string, now = new Date(), details: { errorCode?: string; retryable?: boolean; quotaResetAt?: string } = {}): PlatformConnectorPublicConfig | null {
+    const configs = this.readStoredPlatformConnectorConfigs()
+    const config = configs.find((item) => item.platformKey === platformKey)
+    if (!config) return null
+    const date = now.toISOString().slice(0, 10)
+    const usages = this.readStoredPlatformConnectorUsage()
+    const existing = usages.find((item) => item.platformKey === platformKey && item.date === date)
+    const next: StoredPlatformConnectorUsage = {
+      platformKey,
+      date,
+      usedToday: (existing?.usedToday ?? 0) + 1,
+      lastStatus: status,
+      lastError: status === 'failed' ? message?.slice(0, 500) : undefined,
+      lastErrorCode: status === 'failed' ? details.errorCode?.slice(0, 80) : undefined,
+      lastRetryable: status === 'failed' ? details.retryable : undefined,
+      quotaResetAt: status === 'failed' ? details.quotaResetAt : undefined,
+      lastRequestAt: now.toISOString()
+    }
+    const merged = [
+      ...usages.filter((item) => !(item.platformKey === platformKey && item.date === date)),
+      next
+    ].filter((item) => item.date >= date || item.platformKey !== platformKey)
+      .sort((a, b) => `${a.platformKey}:${a.date}`.localeCompare(`${b.platformKey}:${b.date}`))
+    this.db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `).run(PLATFORM_CONNECTOR_USAGE_KEY, json(merged), now.toISOString())
+    return this.mapPlatformConnectorConfig(config)
+  }
+
+  getPlatformConnectorSecret(platformKey: string): string | undefined {
+    const stored = this.readStoredPlatformConnectorConfigs().find((config) => config.platformKey === platformKey)?.apiKey
+    if (!stored) return undefined
+    const envName = envSecretName(stored)
+    if (envName) return process.env[envName] || undefined
+    return this.decodeSecret(stored) || undefined
+  }
+
   getAIProviderConfig(provider: AIProviderConfig['provider']): AIProviderPublicConfig | null {
     const row = this.db.prepare('SELECT * FROM ai_provider_configs WHERE provider = ?').get(provider) as Record<string, unknown> | undefined
     return row ? this.mapAIProviderConfig(row) : null
@@ -632,6 +835,7 @@ export class LeadMinerRepository {
       secretStorage,
       createdAt
     )
+    this.pruneAIProviderSecretBackups(String(row.provider) as AIProviderConfig['provider'])
     return {
       id,
       provider,
@@ -649,9 +853,16 @@ export class LeadMinerRepository {
     return rows.map((row) => this.mapAISecretBackup(row))
   }
 
+  clearAISecretBackups(provider?: AIProviderConfig['provider']): number {
+    return provider
+      ? runChanges(this.db.prepare('DELETE FROM ai_secret_backups WHERE provider = ?').run(provider))
+      : runChanges(this.db.prepare('DELETE FROM ai_secret_backups').run())
+  }
+
   restoreAIProviderSecretBackup(id: string): AIProviderPublicConfig | null {
     const row = this.db.prepare('SELECT * FROM ai_secret_backups WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) return null
+    const restoredApiKey = row.api_key ? this.reencodeRestoredSecret(String(row.api_key)) : null
     this.db.prepare(`
       INSERT INTO ai_provider_configs (
         provider, model, base_url, api_key, enabled, updated_at
@@ -666,11 +877,30 @@ export class LeadMinerRepository {
       String(row.provider),
       String(row.model),
       row.base_url ? String(row.base_url) : null,
-      row.api_key ? String(row.api_key) : null,
+      restoredApiKey,
       Number(row.enabled) === 1 ? 1 : 0,
       new Date().toISOString()
     )
     return this.getAIProviderConfig(String(row.provider) as AIProviderConfig['provider'])
+  }
+
+  private reencodeRestoredSecret(storedApiKey: string): string {
+    const envName = envSecretName(storedApiKey)
+    if (envName) return storedApiKey
+    const decoded = this.decodeSecret(storedApiKey)
+    return decoded ? this.secretCodec.encode(decoded) : storedApiKey
+  }
+
+  private pruneAIProviderSecretBackups(provider: AIProviderConfig['provider']): void {
+    const staleRows = this.db.prepare(`
+      SELECT id FROM ai_secret_backups
+      WHERE provider = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT -1 OFFSET ?
+    `).all(provider, MAX_AI_SECRET_BACKUPS_PER_PROVIDER) as Array<Record<string, unknown>>
+    for (const row of staleRows) {
+      this.db.prepare('DELETE FROM ai_secret_backups WHERE id = ?').run(String(row.id))
+    }
   }
 
   migrateAIProviderSecret(provider: AIProviderConfig['provider']): AIProviderPublicConfig | null {
@@ -719,6 +949,77 @@ export class LeadMinerRepository {
       secretStorage: String(row.secret_storage) as AIProviderPublicConfig['secretStorage'],
       apiKeySet: Boolean(row.api_key),
       createdAt: String(row.created_at)
+    }
+  }
+
+  private readStoredPlatformConnectorConfigs(): StoredPlatformConnectorConfig[] {
+    const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(PLATFORM_CONNECTOR_CONFIGS_KEY) as Record<string, unknown> | undefined
+    if (!row) return []
+    const parsed = parseJson<unknown>(String(row.value))
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        platformKey: String(item.platformKey ?? ''),
+        enabled: item.enabled === true,
+        apiBaseUrl: typeof item.apiBaseUrl === 'string' ? item.apiBaseUrl : undefined,
+        apiKey: typeof item.apiKey === 'string' ? item.apiKey : undefined,
+        quotaPerDay: normalizeOptionalInteger(item.quotaPerDay, 1, 1_000_000),
+        minDelayMs: normalizeOptionalInteger(item.minDelayMs, 0, 86_400_000),
+        importTemplate: normalizeImportTemplate(item.importTemplate),
+        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString()
+      }))
+      .filter((item) => /^[A-Za-z0-9_-]{1,80}$/.test(item.platformKey))
+  }
+
+  private readStoredPlatformConnectorUsage(): StoredPlatformConnectorUsage[] {
+    const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(PLATFORM_CONNECTOR_USAGE_KEY) as Record<string, unknown> | undefined
+    if (!row) return []
+    const parsed = parseJson<unknown>(String(row.value))
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        platformKey: String(item.platformKey ?? ''),
+        date: typeof item.date === 'string' ? item.date : '',
+        usedToday: normalizeOptionalInteger(item.usedToday, 0, 1_000_000) ?? 0,
+        lastStatus: item.lastStatus === 'failed' ? 'failed' as const : 'ok' as const,
+        lastError: typeof item.lastError === 'string' ? item.lastError.slice(0, 500) : undefined,
+        lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode.slice(0, 80) : undefined,
+        lastRetryable: typeof item.lastRetryable === 'boolean' ? item.lastRetryable : undefined,
+        quotaResetAt: typeof item.quotaResetAt === 'string' && Number.isFinite(Date.parse(item.quotaResetAt)) ? new Date(item.quotaResetAt).toISOString() : undefined,
+        lastRequestAt: typeof item.lastRequestAt === 'string' ? item.lastRequestAt : new Date().toISOString()
+      }))
+      .filter((item) => /^[A-Za-z0-9_-]{1,80}$/.test(item.platformKey) && /^\d{4}-\d{2}-\d{2}$/.test(item.date))
+  }
+
+  private mapPlatformConnectorConfig(config: StoredPlatformConnectorConfig): PlatformConnectorPublicConfig {
+    const storedApiKey = config.apiKey ?? ''
+    const envName = storedApiKey ? envSecretName(storedApiKey) : null
+    const apiKey = envName ? (process.env[envName] ?? '') : storedApiKey ? this.decodeSecret(storedApiKey) : ''
+    const today = new Date().toISOString().slice(0, 10)
+    const usage = this.readStoredPlatformConnectorUsage().find((item) => item.platformKey === config.platformKey && item.date === today)
+    const remainingToday = config.quotaPerDay === undefined ? undefined : Math.max(0, config.quotaPerDay - (usage?.usedToday ?? 0))
+    return {
+      platformKey: config.platformKey,
+      enabled: config.enabled,
+      apiBaseUrl: config.apiBaseUrl,
+      apiKeySet: apiKey.length > 0,
+      apiKeyPreview: envName ? `env:${envName}` : apiKey.length > 4 ? `...${apiKey.slice(-4)}` : undefined,
+      secretStorage: storedApiKey ? this.inspectSecret(storedApiKey) : 'none',
+      quotaPerDay: config.quotaPerDay,
+      minDelayMs: config.minDelayMs,
+      importTemplate: config.importTemplate,
+      usageDate: usage?.date,
+      usedToday: usage?.usedToday ?? 0,
+      remainingToday,
+      lastStatus: usage?.lastStatus,
+      lastError: usage?.lastError,
+      lastErrorCode: usage?.lastErrorCode,
+      lastRetryable: usage?.lastRetryable,
+      quotaResetAt: usage?.quotaResetAt,
+      lastRequestAt: usage?.lastRequestAt,
+      updatedAt: config.updatedAt
     }
   }
 
@@ -823,6 +1124,86 @@ export class LeadMinerRepository {
       updatedAt: String(row.updated_at)
     }))
   }
+
+  clearTasks(): number {
+    return runChanges(this.db.prepare('DELETE FROM tasks').run())
+  }
+
+  countTasks(): number {
+    return this.countRows('tasks')
+  }
+
+  countAISecretBackups(): number {
+    return this.countRows('ai_secret_backups')
+  }
+
+  countPlatformState(): number {
+    return this.countRows('platform_statuses') + this.countRows('platform_protections')
+  }
+
+  private countRows(table: string): number {
+    const allowed = new Set([
+      'search_results',
+      'search_sessions',
+      'comments',
+      'leads',
+      'contents',
+      'tasks',
+      'ai_secret_backups',
+      'platform_statuses',
+      'platform_protections',
+      'audit_logs'
+    ])
+    if (!allowed.has(table)) throw new Error('统计表名不安全')
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as Record<string, unknown> | undefined
+    return Number(row?.count ?? 0)
+  }
+}
+
+function runChanges(result: unknown): number {
+  if (result && typeof result === 'object' && 'changes' in result) {
+    const changes = Number((result as { changes?: unknown }).changes)
+    return Number.isFinite(changes) ? changes : 0
+  }
+  return 0
+}
+
+function normalizeStoredSecret(nextSecret: string | undefined, existingSecret: string | undefined, codec: SecretCodec): string | undefined {
+  if (nextSecret === undefined) return existingSecret
+  const trimmed = nextSecret.trim()
+  if (!trimmed) return undefined
+  const envRef = normalizeEnvSecretRef(trimmed)
+  return envRef ?? codec.encode(trimmed)
+}
+
+function normalizeOptionalInteger(value: unknown, minimum: number, maximum: number): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return undefined
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)))
+}
+
+function normalizeImportTemplate(value: unknown): PlatformConnectorConfig['importTemplate'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as { fields?: unknown; requiredFields?: unknown; sample?: unknown }
+  const fields = normalizeFieldList(raw.fields)
+  if (fields.length === 0) return undefined
+  const requiredFields = normalizeFieldList(raw.requiredFields).filter((field) => fields.includes(field))
+  const sample = typeof raw.sample === 'string' && raw.sample.length <= 2000 ? raw.sample : undefined
+  return {
+    fields,
+    requiredFields: requiredFields.length ? requiredFields : undefined,
+    sample
+  }
+}
+
+function normalizeFieldList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => /^[A-Za-z0-9_\-.]{1,80}$/.test(item)))]
+    .slice(0, 80)
 }
 
 function classifyFollowUp(now: Date, dueAt: Date): FollowUpReminder['status'] {

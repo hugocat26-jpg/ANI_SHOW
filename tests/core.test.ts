@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { access, mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
@@ -10,6 +13,8 @@ import {
   CompliancePolicy,
   LeadMinerRepository,
   MetadataOnlyPlatformAdapter,
+  OfficialApiPlatformAdapter,
+  OfficialApiError,
   PlainSecretCodec,
   PlatformRegistry,
   SearchEngineAdapter,
@@ -18,6 +23,9 @@ import {
   buildIntentAnalysisPrompt,
   buildBilibiliReplyUrl,
   calculateBilibiliRetryDelayMs,
+  canBatchCollectPlatform,
+  canLoginPlatform,
+  canSearchPlatform,
   createBuiltinPlatformRegistry,
   createDefaultApplicationCore,
   codeFromHttpStatus,
@@ -36,12 +44,16 @@ import {
   extractXiaohongshuPageCursor,
   extractYoutubeContinuationRequests,
   extractZhihuPageCursor,
+  getManualImportTemplate,
+  isAllowedPlatformFinalUrl,
   isAuthCookie,
   listModelPricing,
+  normalizeAIProviderBaseUrl,
   normalizeIntentResult,
   parseBilibiliComments,
   parseInstagramComments,
   parseKuaishouComments,
+  parseCommentCsv,
   parseRedditComments,
   parseShortVideoComments,
   parseWeiboComments,
@@ -49,8 +61,11 @@ import {
   parseYoutubeComments,
   parseZhihuComments,
   parseSearchResultHtml,
+  platformExpansionTargetSpecs,
+  requiresSingleItemCollection,
   signBilibiliWbiParams,
   type LLMClient,
+  type ApiFetch,
   type LeadRecord,
   type PlatformSpec,
   type PlatformStatus,
@@ -75,6 +90,490 @@ test('built-in platform registry includes domestic and international targets', (
   assert.ok(searchable.includes('google'))
   assert.ok(searchable.includes('tiktok'))
   assert.ok(app.platforms.get('youtube').spec.capabilities.includes('login'))
+})
+
+test('built-in platform specs expose governance manifest metadata', () => {
+  const app = createDefaultApplicationCore()
+  const xiaohongshu = app.platforms.get('xiaohongshu').spec
+  const google = app.platforms.get('google').spec
+  const youtube = app.platforms.get('youtube').spec
+
+  assert.equal(xiaohongshu.riskLevel, 'high')
+  assert.equal(xiaohongshu.authMode, 'required_login')
+  assert.equal(xiaohongshu.connectorKind, 'logged_in_web')
+  assert.match(xiaohongshu.complianceNotes ?? '', /个人账号|批量采集/)
+  assert.equal(google.riskLevel, 'low')
+  assert.equal(google.authMode, 'none')
+  assert.equal(google.integrationStatus, 'active')
+  assert.equal(youtube.connectorKind, 'hybrid')
+})
+
+test('platform expansion targets describe roadmap integration modes', () => {
+  const statuses = new Set(platformExpansionTargetSpecs.map((spec) => spec.integrationStatus))
+  const byKey = new Map(platformExpansionTargetSpecs.map((spec) => [spec.key, spec]))
+
+  assert.ok(statuses.has('planned'))
+  assert.ok(statuses.has('manual_import'))
+  assert.ok(statuses.has('official_api_preferred'))
+  assert.equal(byKey.get('google_custom_search_api')?.connectorKind, 'official_api')
+  assert.equal(byKey.get('wechat_official_account')?.integrationStatus, 'manual_import')
+  assert.equal(byKey.get('linkedin')?.riskLevel, 'high')
+  assert.ok(platformExpansionTargetSpecs.every((spec) => spec.complianceNotes && spec.roadmapNotes))
+})
+
+test('platform capability policy separates active execution from roadmap targets', async () => {
+  const activeGoogle = createDefaultApplicationCore().platforms.get('google').spec
+  const manualWechat = platformExpansionTargetSpecs.find((spec) => spec.key === 'wechat_official_account')
+  const apiGoogle = platformExpansionTargetSpecs.find((spec) => spec.key === 'google_custom_search_api')
+  const highRiskTarget = platformExpansionTargetSpecs.find((spec) => spec.key === 'linkedin')
+
+  assert.ok(manualWechat)
+  assert.ok(apiGoogle)
+  assert.ok(highRiskTarget)
+  assert.equal(canSearchPlatform(activeGoogle), true)
+  assert.equal(canSearchPlatform(manualWechat), false)
+  assert.equal(canLoginPlatform(manualWechat), false)
+  assert.equal(canSearchPlatform(apiGoogle), false)
+  assert.equal(canBatchCollectPlatform(highRiskTarget), false)
+  assert.equal(requiresSingleItemCollection(highRiskTarget), false)
+
+  const registry = new PlatformRegistry()
+  registry.register(new MetadataOnlyPlatformAdapter({
+    key: 'planned-search',
+    name: 'Planned Search',
+    category: 'search_engine',
+    domains: ['planned.example'],
+    requiresLogin: false,
+    capabilities: ['search', 'status'],
+    rateLimit: { concurrency: 1, minDelayMs: 1, maxRetries: 0 },
+    integrationStatus: 'planned',
+    riskLevel: 'low',
+    authMode: 'none',
+    connectorKind: 'public_web'
+  }))
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(), new LeadMinerRepository(':memory:'), new BrowserContextManager())
+  await assert.rejects(
+    () => app.searchAcrossPlatforms('咖啡机', ['planned-search']),
+    /未开放搜索能力/
+  )
+})
+
+test('platform connector configs persist api keys and manual import templates', () => {
+  const repository = new LeadMinerRepository(':memory:', new PlainSecretCodec())
+  const saved = repository.savePlatformConnectorConfig({
+    platformKey: 'google_custom_search_api',
+    enabled: true,
+    apiBaseUrl: 'https://www.googleapis.com/customsearch/v1',
+    apiKey: 'sk-platform-1234',
+    quotaPerDay: 100,
+    minDelayMs: 250,
+    updatedAt: new Date().toISOString()
+  })
+
+  assert.equal(saved.apiKeySet, true)
+  assert.equal(saved.apiKeyPreview, '...1234')
+  assert.equal(saved.secretStorage, 'legacy_plain')
+  assert.equal(repository.getPlatformConnectorSecret('google_custom_search_api'), 'sk-platform-1234')
+
+  const updated = repository.savePlatformConnectorConfig({
+    platformKey: 'wechat_official_account',
+    enabled: true,
+    apiKey: 'env:WECHAT_IMPORT_TOKEN',
+    importTemplate: {
+      fields: ['url', 'title', 'body', 'published_at'],
+      requiredFields: ['url', 'body'],
+      sample: 'url,title,body,published_at'
+    },
+    updatedAt: new Date().toISOString()
+  })
+
+  assert.equal(updated.secretStorage, 'external_env')
+  assert.deepEqual(updated.importTemplate?.requiredFields, ['url', 'body'])
+  assert.equal(repository.listPlatformConnectorConfigs().length, 2)
+  repository.close()
+})
+
+test('application validates platform connector config boundaries', () => {
+  const app = createDefaultApplicationCore()
+
+  const saved = app.savePlatformConnectorConfig({
+    platformKey: 'youtube_data_api',
+    enabled: true,
+    apiKey: 'env:YOUTUBE_DATA_API_KEY',
+    quotaPerDay: 5000,
+    minDelayMs: 300
+  })
+  assert.equal(saved.platformKey, 'youtube_data_api')
+  assert.equal(saved.secretStorage, 'external_env')
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'platform.connector.save'))
+
+  assert.throws(
+    () => app.savePlatformConnectorConfig({
+      platformKey: 'unknown-platform',
+      enabled: true
+    }),
+    /平台不存在/
+  )
+  assert.throws(
+    () => app.savePlatformConnectorConfig({
+      platformKey: 'youtube_data_api',
+      enabled: true,
+      quotaPerDay: 0
+    }),
+    /每日配额/
+  )
+})
+
+test('official api adapter searches google and youtube payloads with connector config', async () => {
+  const requestedUrls: string[] = []
+  const fetchFn: ApiFetch = async (url) => {
+    requestedUrls.push(url)
+    if (url.includes('youtube')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            items: [{
+              id: { videoId: 'video123' },
+              snippet: { title: 'YouTube API Result', description: 'video summary' }
+            }]
+          }
+        }
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          items: [{
+            title: 'Google API Result',
+            link: 'https://example.com/result',
+            snippet: 'search summary'
+          }]
+        }
+      }
+    }
+  }
+  const google = platformExpansionTargetSpecs.find((spec) => spec.key === 'google_custom_search_api')
+  const youtube = platformExpansionTargetSpecs.find((spec) => spec.key === 'youtube_data_api')
+  assert.ok(google)
+  assert.ok(youtube)
+
+  const googleAdapter = new OfficialApiPlatformAdapter({ ...google, integrationStatus: 'active' }, () => ({
+    publicConfig: { platformKey: google.key, enabled: true, apiBaseUrl: 'https://www.googleapis.com/customsearch/v1?cx=cx-1', apiKeySet: true, secretStorage: 'external_env', updatedAt: new Date().toISOString() },
+    apiKey: 'google-key'
+  }), fetchFn)
+  const youtubeAdapter = new OfficialApiPlatformAdapter({ ...youtube, integrationStatus: 'active' }, () => ({
+    publicConfig: { platformKey: youtube.key, enabled: true, apiKeySet: true, secretStorage: 'external_env', updatedAt: new Date().toISOString() },
+    apiKey: 'youtube-key'
+  }), fetchFn)
+
+  const googleResults = await googleAdapter.search({ keyword: '咖啡机', platformKeys: [google.key], limit: 5 })
+  const youtubeResults = await youtubeAdapter.search({ keyword: '咖啡机', platformKeys: [youtube.key], limit: 5 })
+
+  assert.equal(googleResults[0].title, 'Google API Result')
+  assert.equal(youtubeResults[0].url, 'https://www.youtube.com/watch?v=video123')
+  assert.ok(requestedUrls.some((url) => url.includes('key=google-key') && url.includes('cx=cx-1')))
+  assert.ok(requestedUrls.some((url) => url.includes('key=youtube-key') && url.includes('type=video')))
+})
+
+test('official api adapter classifies quota and auth errors with retry advice', async () => {
+  const google = platformExpansionTargetSpecs.find((spec) => spec.key === 'google_custom_search_api')
+  assert.ok(google)
+  const quotaAdapter = new OfficialApiPlatformAdapter({ ...google, integrationStatus: 'active' }, () => ({
+    publicConfig: { platformKey: google.key, enabled: true, apiKeySet: true, secretStorage: 'external_env', updatedAt: new Date().toISOString() },
+    apiKey: 'google-key'
+  }), async () => ({
+    ok: false,
+    status: 403,
+    async json() {
+      return {
+        error: {
+          message: 'Daily Limit Exceeded',
+          errors: [{ reason: 'dailyLimitExceeded' }]
+        }
+      }
+    }
+  }))
+  await assert.rejects(
+    () => quotaAdapter.search({ keyword: '咖啡机', platformKeys: [google.key], limit: 5 }),
+    (error) => {
+      assert.ok(error instanceof OfficialApiError)
+      assert.equal(error.code, 'quota_exhausted')
+      assert.equal(error.retryable, false)
+      assert.match(error.message, /配额已耗尽|配额重置/)
+      return true
+    }
+  )
+
+  const authAdapter = new OfficialApiPlatformAdapter({ ...google, integrationStatus: 'active' }, () => ({
+    publicConfig: { platformKey: google.key, enabled: true, apiKeySet: true, secretStorage: 'external_env', updatedAt: new Date().toISOString() },
+    apiKey: 'bad-key'
+  }), async () => ({
+    ok: false,
+    status: 401,
+    async json() {
+      return { error: { message: 'API key not valid' } }
+    }
+  }))
+  await assert.rejects(
+    () => authAdapter.search({ keyword: '咖啡机', platformKeys: [google.key], limit: 5 }),
+    (error) => {
+      assert.ok(error instanceof OfficialApiError)
+      assert.equal(error.code, 'auth_failed')
+      assert.equal(error.retryable, false)
+      assert.match(error.message, /认证失败|API Key/)
+      return true
+    }
+  )
+})
+
+test('application registers enabled official api connector as searchable platform', async () => {
+  const registry = createBuiltinPlatformRegistry(new BrowserContextManager())
+  const repository = new LeadMinerRepository(':memory:', new PlainSecretCodec())
+  repository.savePlatformConnectorConfig({
+    platformKey: 'google_custom_search_api',
+    enabled: true,
+    apiBaseUrl: 'https://www.googleapis.com/customsearch/v1?cx=cx-1',
+    apiKey: 'env:GOOGLE_CSE_KEY',
+    quotaPerDay: 100,
+    minDelayMs: 300,
+    updatedAt: new Date().toISOString()
+  })
+  const previous = process.env.GOOGLE_CSE_KEY
+  process.env.GOOGLE_CSE_KEY = 'configured-key'
+  try {
+    const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new BrowserContextManager())
+    assert.ok(app.platforms.keys().includes('google_custom_search_api'))
+    assert.equal(canSearchPlatform(app.platforms.get('google_custom_search_api').spec), true)
+  } finally {
+    if (previous === undefined) delete process.env.GOOGLE_CSE_KEY
+    else process.env.GOOGLE_CSE_KEY = previous
+    repository.close()
+  }
+})
+
+test('official api connector usage records success and failure visibility', async () => {
+  class MockOfficialApiAdapter extends MetadataOnlyPlatformAdapter {
+    shouldFail = false
+
+    override async search(input: SearchInput): Promise<SearchResult[]> {
+      if (this.shouldFail) throw new Error('quota exhausted')
+      return [{
+        id: 'official-api-result',
+        platformKey: this.spec.key,
+        title: input.keyword,
+        url: 'https://example.com/result',
+        snippet: 'ok',
+        relevance: 1,
+        createdAt: new Date().toISOString()
+      }]
+    }
+  }
+  const repository = new LeadMinerRepository(':memory:')
+  repository.savePlatformConnectorConfig({
+    platformKey: 'mock_official_api',
+    enabled: true,
+    apiKey: 'sk-test',
+    quotaPerDay: 2,
+    updatedAt: new Date().toISOString()
+  })
+  const adapter = new MockOfficialApiAdapter({
+    key: 'mock_official_api',
+    name: 'Mock Official API',
+    category: 'search_engine',
+    domains: ['example.com'],
+    requiresLogin: false,
+    capabilities: ['search', 'status'],
+    rateLimit: { concurrency: 1, minDelayMs: 0, maxRetries: 0 },
+    authMode: 'api_key',
+    riskLevel: 'low',
+    connectorKind: 'official_api',
+    integrationStatus: 'active'
+  })
+  const registry = new PlatformRegistry()
+  registry.register(adapter)
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new BrowserContextManager())
+
+  await app.searchAcrossPlatforms('咖啡机', ['mock_official_api'])
+  let config = app.listPlatformConnectorConfigs().find((item) => item.platformKey === 'mock_official_api')
+  assert.equal(config?.usedToday, 1)
+  assert.equal(config?.remainingToday, 1)
+  assert.equal(config?.lastStatus, 'ok')
+
+  adapter.shouldFail = true
+  await assert.rejects(() => app.searchAcrossPlatforms('咖啡机', ['mock_official_api']), /quota exhausted/)
+  config = app.listPlatformConnectorConfigs().find((item) => item.platformKey === 'mock_official_api')
+  assert.equal(config?.usedToday, 2)
+  assert.equal(config?.remainingToday, 0)
+  assert.equal(config?.lastStatus, 'failed')
+  assert.match(config?.lastError ?? '', /quota exhausted/)
+})
+
+test('official api connector usage records structured failure guidance', async () => {
+  class FailingOfficialApiAdapter extends MetadataOnlyPlatformAdapter {
+    override async search(): Promise<SearchResult[]> {
+      throw new OfficialApiError('Google API 配额耗尽', 'quota_exhausted', 403, false)
+    }
+  }
+  const repository = new LeadMinerRepository(':memory:')
+  repository.savePlatformConnectorConfig({
+    platformKey: 'mock_quota_api',
+    enabled: true,
+    apiKey: 'sk-test',
+    quotaPerDay: 10,
+    updatedAt: new Date().toISOString()
+  })
+  const registry = new PlatformRegistry()
+  registry.register(new FailingOfficialApiAdapter({
+    key: 'mock_quota_api',
+    name: 'Mock Quota API',
+    category: 'search_engine',
+    domains: ['example.com'],
+    requiresLogin: false,
+    capabilities: ['search', 'status'],
+    rateLimit: { concurrency: 1, minDelayMs: 0, maxRetries: 0 },
+    authMode: 'api_key',
+    riskLevel: 'low',
+    connectorKind: 'official_api',
+    integrationStatus: 'active'
+  }))
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new BrowserContextManager())
+
+  await assert.rejects(() => app.searchAcrossPlatforms('咖啡机', ['mock_quota_api']), /配额耗尽/)
+
+  const config = app.listPlatformConnectorConfigs().find((item) => item.platformKey === 'mock_quota_api')
+  assert.equal(config?.lastStatus, 'failed')
+  assert.equal(config?.lastErrorCode, 'quota_exhausted')
+  assert.equal(config?.lastRetryable, false)
+  assert.ok(config?.quotaResetAt)
+  assert.equal(config?.remainingToday, 9)
+  repository.close()
+})
+
+test('manual import parser accepts comment CSV aliases and quoted commas', () => {
+  const comments = parseCommentCsv([
+    '昵称,评论,点赞数,发布时间,链接',
+    'Alice,"想买, 求链接",12,2026-05-20T10:00:00.000Z,https://mp.weixin.qq.com/s/demo',
+    'Bob,价格多少,3,,'
+  ].join('\r\n'))
+
+  assert.equal(comments.length, 2)
+  assert.equal(comments[0].nickname, 'Alice')
+  assert.equal(comments[0].text, '想买, 求链接')
+  assert.equal(comments[0].likes, 12)
+  assert.equal(comments[0].contentUrl, 'https://mp.weixin.qq.com/s/demo')
+  assert.equal(comments[1].nickname, 'Bob')
+})
+
+test('manual import templates parse social and commerce aliases', () => {
+  const social = parseCommentCsv(getManualImportTemplate('social_comments_csv'))
+  const commerce = parseCommentCsv(getManualImportTemplate('commerce_reviews_csv'))
+
+  assert.equal(social[0].nickname, 'Alice')
+  assert.match(social[0].text, /购买渠道/)
+  assert.equal(social[0].likes, 12)
+  assert.equal(commerce[0].nickname, 'Alice')
+  assert.match(commerce[0].text, /回购/)
+  assert.equal(commerce[0].likes, 3)
+})
+
+test('application imports manual WeChat article comments and saves leads locally', async () => {
+  const app = createDefaultApplicationCore()
+  const preview = app.previewManualContent({
+    platformKey: 'wechat_official_account',
+    templateType: 'wechat_article_csv',
+    sourceUrl: 'https://mp.weixin.qq.com/s/kSalNSfzqqKRcFqHopdW0A',
+    title: '咖啡机选购指南',
+    csv: [
+      'author,comment,likes',
+      'Alice,这个多少钱 求链接,8',
+      'Bob,先收藏看看,1',
+      'Bob,先收藏看看,1'
+    ].join('\n')
+  })
+  assert.equal(preview.templateType, 'wechat_article_csv')
+  assert.equal(preview.conflictStrategy, 'skip_duplicates')
+  assert.equal(preview.parsedComments, 3)
+  assert.equal(preview.newComments, 2)
+  assert.equal(preview.duplicates, 1)
+  assert.equal(preview.updatableDuplicates, 0)
+
+  const result = await app.importManualContent({
+    platformKey: 'wechat_official_account',
+    sourceUrl: 'https://mp.weixin.qq.com/s/kSalNSfzqqKRcFqHopdW0A',
+    title: '咖啡机选购指南',
+    csv: [
+      'author,comment,likes',
+      'Alice,这个多少钱 求链接,8',
+      'Bob,先收藏看看,1',
+      'Bob,先收藏看看,1'
+    ].join('\n')
+  })
+
+  assert.equal(result.content.platformKey, 'wechat_official_account')
+  assert.equal(result.content.contentType, 'post')
+  assert.equal(result.commentsImported, 2)
+  assert.equal(result.duplicatesSkipped, 1)
+  assert.ok(result.leadsGenerated >= 1)
+  assert.equal(app.repository.listComments(result.content.contentId).length, 2)
+  assert.ok(app.repository.listLeads().some((lead) => lead.nickname === 'Alice' && lead.platformKey === 'wechat_official_account'))
+  assert.ok(app.repository.listTasks().some((task) => task.type === 'manual_import' && task.status === 'completed'))
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'manual_import.completed'))
+
+  const secondPreview = app.previewManualContent({
+    platformKey: 'wechat_official_account',
+    sourceUrl: 'https://mp.weixin.qq.com/s/kSalNSfzqqKRcFqHopdW0A',
+    csv: [
+      'author,comment,likes',
+      'Alice,这个多少钱 求链接,8'
+    ].join('\n')
+  })
+  assert.equal(secondPreview.newComments, 0)
+  assert.equal(secondPreview.duplicates, 1)
+})
+
+test('manual import can update duplicate comment metadata when conflict strategy allows it', async () => {
+  const app = createDefaultApplicationCore()
+  await app.importManualContent({
+    platformKey: 'wechat_official_account',
+    sourceUrl: 'https://mp.weixin.qq.com/s/conflict-demo',
+    title: '冲突合并演示',
+    csv: [
+      'author,comment,likes,time',
+      'Alice,想要购买链接,1,2026-05-20T10:00:00.000Z'
+    ].join('\n')
+  })
+
+  const preview = app.previewManualContent({
+    platformKey: 'wechat_official_account',
+    sourceUrl: 'https://mp.weixin.qq.com/s/conflict-demo',
+    conflictStrategy: 'replace_existing',
+    csv: [
+      'author,comment,likes,time',
+      'Alice,想要购买链接,9,2026-05-21T10:00:00.000Z'
+    ].join('\n')
+  })
+  assert.equal(preview.duplicates, 1)
+  assert.equal(preview.updatableDuplicates, 1)
+
+  const result = await app.importManualContent({
+    platformKey: 'wechat_official_account',
+    sourceUrl: 'https://mp.weixin.qq.com/s/conflict-demo',
+    conflictStrategy: 'replace_existing',
+    csv: [
+      'author,comment,likes,time',
+      'Alice,想要购买链接,9,2026-05-21T10:00:00.000Z'
+    ].join('\n')
+  })
+  const comments = app.repository.listComments(result.content.contentId)
+  assert.equal(result.commentsImported, 0)
+  assert.equal(result.duplicatesUpdated, 1)
+  assert.equal(comments.length, 1)
+  assert.equal(comments[0].likes, 9)
+  assert.equal(comments[0].publishedAt, '2026-05-21T10:00:00.000Z')
 })
 
 test('AI service expands keywords and scores high intent leads with rule fallback', () => {
@@ -187,6 +686,32 @@ test('AI provider configs are persisted without exposing api keys', () => {
   assert.equal(app.currentModelPricing()?.provider, 'deepseek')
   assert.ok(app.listModelPricing().length >= 4)
   assert.equal(app.listAuditLogs()[0].action, 'ai.provider.save')
+})
+
+test('AI provider base urls reject private and off-provider hosts', () => {
+  const app = createDefaultApplicationCore()
+
+  assert.equal(normalizeAIProviderBaseUrl('custom', 'https://llm.example.com/v1'), 'https://llm.example.com/v1')
+  assert.throws(
+    () => app.saveAIProviderConfig({
+      provider: 'custom',
+      model: 'local',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey: 'sk-local',
+      enabled: true
+    }),
+    /Base URL 不安全/
+  )
+  assert.throws(
+    () => app.saveAIProviderConfig({
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+      baseUrl: 'https://evil.example.com/v1',
+      apiKey: 'sk-test',
+      enabled: true
+    }),
+    /Base URL 不安全/
+  )
 })
 
 test('AI provider config keeps existing api key when editing model only', () => {
@@ -412,6 +937,53 @@ test('application can restore an AI secret backup after migration', () => {
   assert.equal(restored?.provider, 'openai')
   assert.equal(app.repository.getAIProviderSecret('openai'), 'sk-restore-1234')
   assert.ok(app.listAuditLogs().some((event) => event.action === 'ai.secret.restore'))
+})
+
+test('AI secret backups are pruned and legacy restores re-encode with active codec', () => {
+  const repository = new LeadMinerRepository(':memory:', new PlainSecretCodec())
+  const now = new Date().toISOString()
+  repository.saveAIProviderConfig({
+    provider: 'openai',
+    model: 'gpt-4.1-mini',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: 'sk-legacy-0001',
+    enabled: true,
+    updatedAt: now
+  })
+  const firstBackup = repository.createAIProviderSecretBackup('openai', 'manual')
+  const secureCodec: SecretCodec = {
+    encode(value) {
+      return `secure:${Buffer.from(value, 'utf8').toString('base64')}`
+    },
+    decode(value) {
+      return value.startsWith('secure:') ? Buffer.from(value.slice(7), 'base64').toString('utf8') : value
+    },
+    describe() {
+      return 'secure'
+    },
+    inspect(value) {
+      return value.startsWith('secure:') ? 'encrypted' : 'legacy_plain'
+    }
+  }
+  ;(repository as unknown as { secretCodec: SecretCodec }).secretCodec = secureCodec
+  repository.saveAIProviderConfig({
+    provider: 'openai',
+    model: 'gpt-4.1-mini',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: 'sk-current-0002',
+    enabled: true,
+    updatedAt: now
+  })
+
+  const restored = repository.restoreAIProviderSecretBackup(firstBackup?.id ?? '')
+  assert.equal(restored?.secretStorage, 'encrypted')
+  assert.equal(repository.getAIProviderSecret('openai'), 'sk-legacy-0001')
+
+  for (let index = 0; index < 7; index += 1) {
+    repository.createAIProviderSecretBackup('openai', 'manual')
+  }
+  assert.equal(repository.listAISecretBackups('openai').length, 5)
+  repository.close()
 })
 
 test('application reports AI secret health and rotation advice', () => {
@@ -875,6 +1447,75 @@ test('repository persists platform statuses, tasks and search results', () => {
   repository.close()
 })
 
+test('application privacy cleanup clears local data and selected platform profiles', async () => {
+  const actualProfileRoot = path.join(tmpdir(), `lead-miner-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const actualLogRoot = path.join(tmpdir(), `lead-miner-logs-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  await mkdir(path.join(actualProfileRoot, 'google'), { recursive: true })
+  await mkdir(path.join(actualLogRoot, 'nested'), { recursive: true })
+  await writeFile(path.join(actualProfileRoot, 'google', 'Cookies'), 'cookie')
+  await writeFile(path.join(actualLogRoot, 'lead-miner.log'), 'token=secret')
+  await writeFile(path.join(actualLogRoot, 'nested', 'debug.jsonl'), '{"cookie":"secret"}')
+  await writeFile(path.join(actualLogRoot, 'ignore.sqlite3'), 'db')
+  const app = createDefaultApplicationCore({ profileRoot: actualProfileRoot, logRoot: actualLogRoot })
+  const now = new Date().toISOString()
+  app.repository.savePlatformStatus({ platformKey: 'google', available: true, loggedIn: true, latencyMs: 1, checkedAt: now, errorCode: 'ok', message: 'ok' })
+  app.repository.savePlatformProtection({ platformKey: 'google', pausedUntil: new Date(Date.now() + 86_400_000).toISOString(), reason: 'test', createdAt: now })
+  const session = app.repository.createSearchSession('咖啡机', ['google'])
+  app.repository.saveSearchResults(session.id, [{ id: 'cleanup-result', platformKey: 'google', title: 't', url: 'https://www.google.com/search?q=x', snippet: 's', relevance: 1, createdAt: now }])
+  app.repository.saveContent({ platformKey: 'youtube', contentId: 'v1', contentType: 'video', url: 'https://www.youtube.com/watch?v=abc123XYZ00' })
+  app.repository.saveComment({ id: 'cleanup-comment', platformKey: 'youtube', contentId: 'v1', contentUrl: 'https://www.youtube.com/watch?v=abc123XYZ00', nickname: 'Alice', text: '多少钱', likes: 1, publishedAt: now, collectedAt: now })
+  app.repository.saveLead({ id: 'cleanup-lead', commentId: 'cleanup-comment', platformKey: 'youtube', contentId: 'v1', nickname: 'Alice', text: '多少钱', intentLevel: 'high', confidence: 1, keywords: ['多少钱'], score: 95, scoreReason: 'test', suggestedAction: '跟进', status: 'new', createdAt: now })
+  app.tasks.create('search', { keyword: '咖啡机' }, 'google')
+  app.saveAIProviderConfig({ provider: 'openai', model: 'gpt-4.1-mini', baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-cleanup-1234', enabled: true })
+  app.repository.createAIProviderSecretBackup('openai', 'manual')
+
+  const estimate = await app.previewPrivacyCleanup({
+    platformProfiles: true,
+    platformKeys: ['google'],
+    platformState: true,
+    searchData: true,
+    commentsAndLeads: true,
+    tasks: true,
+    aiSecretBackups: true,
+    localLogs: true
+  })
+  assert.equal(estimate.platformProfilesFound, 1)
+  assert.equal(estimate.localLogFilesCleared, 2)
+  assert.equal(estimate.searchRowsCleared, 2)
+  assert.equal(estimate.leadRowsCleared, 1)
+
+  const result = await app.cleanupPrivacyData({
+    platformProfiles: true,
+    platformKeys: ['google'],
+    platformState: true,
+    searchData: true,
+    commentsAndLeads: true,
+    tasks: true,
+    aiSecretBackups: true,
+    localLogs: true
+  })
+
+  assert.equal(result.platformProfilesCleared, 1)
+  assert.equal(result.platformStateRowsCleared, 2)
+  assert.equal(result.searchRowsCleared, 2)
+  assert.equal(result.leadRowsCleared, 1)
+  assert.equal(result.commentRowsCleared, 2)
+  assert.equal(result.taskRowsCleared, 1)
+  assert.equal(result.aiSecretBackupRowsCleared, 1)
+  assert.equal(result.localLogFilesCleared, 2)
+  assert.ok(result.localLogBytesCleared > 0)
+  await assert.rejects(() => access(path.join(actualProfileRoot, 'google')))
+  await assert.rejects(() => access(path.join(actualLogRoot, 'lead-miner.log')))
+  await assert.rejects(() => access(path.join(actualLogRoot, 'nested', 'debug.jsonl')))
+  await access(path.join(actualLogRoot, 'ignore.sqlite3'))
+  assert.equal(app.repository.listSearchResults().length, 0)
+  assert.equal(app.repository.listComments().length, 0)
+  assert.equal(app.repository.listLeads().length, 0)
+  assert.equal(app.repository.listTasks().length, 0)
+  assert.equal(app.listAISecretBackups('openai').length, 0)
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'privacy.cleanup'))
+})
+
 test('repository filters leads, updates status and stores audit logs', () => {
   const repository = new LeadMinerRepository(':memory:')
   const now = new Date().toISOString()
@@ -1043,6 +1684,43 @@ test('application core updates lead status and exports sanitized csv', () => {
   assert.ok(exported.content.includes('platformKey,nickname,text,score,scoreReason,status'))
   assert.ok(exported.content.includes('bilibili,Alice'))
   assert.equal(app.listAuditLogs().length, 2)
+})
+
+test('application core neutralizes spreadsheet formulas in csv exports', () => {
+  const app = createDefaultApplicationCore()
+  app.repository.saveLead({
+    id: 'lead-formula-1',
+    commentId: 'comment-formula-1',
+    platformKey: 'youtube',
+    contentId: 'content-formula-1',
+    nickname: '=HYPERLINK("https://evil.test","click")',
+    text: '+cmd|calc',
+    intentLevel: 'high',
+    confidence: 0.92,
+    keywords: ['求链接'],
+    score: 95,
+    scoreReason: '@external',
+    suggestedAction: '-call',
+    status: 'new',
+    note: '\tstealth',
+    createdAt: new Date().toISOString()
+  })
+
+  const exported = app.exportLeads({
+    fields: ['nickname', 'text', 'scoreReason', 'suggestedAction', 'note']
+  })
+  const preview = app.previewLeadExport({
+    fields: ['nickname', 'text', 'scoreReason', 'suggestedAction', 'note']
+  })
+
+  assert.ok(exported.content.includes('"\'=HYPERLINK(""https://evil.test"",""click"")"'))
+  assert.ok(exported.content.includes("'+cmd|calc"))
+  assert.ok(exported.content.includes("'@external"))
+  assert.ok(exported.content.includes("'-call"))
+  assert.ok(exported.content.includes("'\tstealth"))
+  assert.equal(preview.count, 1)
+  assert.equal(preview.sampleRows[0].nickname, '=HYPERLINK("https://evil.test","click")')
+  assert.equal('apiKey' in preview.sampleRows[0], false)
 })
 
 test('application core updates lead details, bulk statuses and exports follow-up fields', () => {
@@ -1398,6 +2076,24 @@ test('auth cookie detection uses platform-specific strong cookie names', () => {
   assert.equal(isAuthCookie('facebook', 'fr'), false)
   assert.equal(isAuthCookie('facebook', 'c_user'), true)
   assert.equal(isAuthCookie('unknown', 'sessionid'), false)
+})
+
+test('platform final url validation rejects redirects to private or off-domain hosts', () => {
+  const domains = ['xiaohongshu.com', 'xhslink.com']
+
+  assert.equal(isAllowedPlatformFinalUrl('https://www.xiaohongshu.com/explore/abc', domains), true)
+  assert.equal(isAllowedPlatformFinalUrl('https://sub.xhslink.com/path', domains), true)
+  assert.equal(isAllowedPlatformFinalUrl('http://www.xiaohongshu.com/explore/abc', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://evil.test/explore/abc', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://127.0.0.1/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://localhost/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://[::1]/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://[fe80::1]/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://[fc00::1]/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://[::ffff:127.0.0.1]/admin', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://169.254.169.254/latest/meta-data', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('https://192.168.1.10/dashboard', domains), false)
+  assert.equal(isAllowedPlatformFinalUrl('not a url', domains), false)
 })
 
 test('search html parser extracts generic external result anchors safely', () => {
@@ -2735,11 +3431,13 @@ test('application core classifies zhihu login pages when no comments are parsed'
 })
 
 test('application core classifies xiaohongshu captcha pages when no comments are parsed', async () => {
+  let renderedFetches = 0
   const executor: SearchPageExecutor = {
     async fetchHtml() {
       return ''
     },
     async fetchRenderedHtml() {
+      renderedFetches += 1
       return '<html><body>请完成滑块验证码验证后继续访问</body></html>'
     }
   }
@@ -2751,14 +3449,18 @@ test('application core classifies xiaohongshu captcha pages when no comments are
     domains: ['xiaohongshu.com', 'xhslink.com'],
     requiresLogin: true,
     capabilities: ['search', 'login', 'status', 'parse_content', 'comments'],
-    rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 }
+    rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 },
+    authMode: 'required_login',
+    riskLevel: 'high',
+    connectorKind: 'logged_in_web'
   }, (keyword) => `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`, undefined, executor))
+  const repository = new LeadMinerRepository(':memory:')
   const app = new ApplicationCore(
     registry,
     new AIService(),
     new CompliancePolicy(),
     new TaskOrchestrator(),
-    new LeadMinerRepository(':memory:'),
+    repository,
     new BrowserContextManager()
   )
 
@@ -2768,7 +3470,78 @@ test('application core classifies xiaohongshu captcha pages when no comments are
   )
 
   assert.equal(app.tasks.list()[0].errorCode, 'captcha_required')
-  assert.equal(app.listAuditLogs()[0].action, 'collect.failed')
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'collect.failed'))
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'platform.protection.paused'))
+
+  const fetchesAfterPause = renderedFetches
+  await assert.rejects(
+    () => app.collectComments('xiaohongshu', 'https://www.xiaohongshu.com/explore/abc123'),
+    /账号安全保护暂停真实评论采集/
+  )
+  assert.equal(renderedFetches, fetchesAfterPause)
+
+  const reloadedApp = new ApplicationCore(
+    registry,
+    new AIService(),
+    new CompliancePolicy(),
+    new TaskOrchestrator(repository),
+    repository,
+    new BrowserContextManager()
+  )
+  const [status] = await reloadedApp.checkPlatformStatuses()
+  assert.equal(status.errorCode, 'rate_limited')
+  assert.match(status.message, /账号保护暂停真实采集/)
+  await assert.rejects(
+    () => reloadedApp.searchAcrossPlatforms('咖啡机', ['xiaohongshu']),
+    /账号安全保护暂停真实搜索/
+  )
+  await assert.rejects(
+    () => reloadedApp.parseContent('xiaohongshu', 'https://www.xiaohongshu.com/explore/abc123'),
+    /账号安全保护暂停真实内容解析/
+  )
+})
+
+test('application account protection is derived from platform manifest risk metadata', async () => {
+  class ManifestRiskAdapter extends MetadataOnlyPlatformAdapter {
+    override async parseContent(url: string) {
+      return {
+        platformKey: this.spec.key,
+        url,
+        contentId: 'post-1',
+        contentType: 'post' as const
+      }
+    }
+
+    override async *collectComments() {
+      yield { type: 'failed' as const, payload: { message: '验证码校验失败' } }
+    }
+  }
+  const registry = new PlatformRegistry()
+  registry.register(new ManifestRiskAdapter({
+    key: 'new-risk-platform',
+    name: 'New Risk Platform',
+    category: 'social',
+    domains: ['risk.example'],
+    requiresLogin: true,
+    capabilities: ['search', 'login', 'status', 'parse_content', 'comments'],
+    rateLimit: { concurrency: 1, minDelayMs: 100, maxRetries: 1 },
+    authMode: 'required_login',
+    riskLevel: 'high',
+    connectorKind: 'logged_in_web'
+  }))
+  const repository = new LeadMinerRepository(':memory:')
+  const app = new ApplicationCore(registry, new AIService(), new CompliancePolicy(), new TaskOrchestrator(repository), repository, new BrowserContextManager())
+
+  await assert.rejects(
+    () => app.collectComments('new-risk-platform', 'https://risk.example/post/1'),
+    /验证码校验失败/
+  )
+
+  assert.ok(app.listAuditLogs().some((event) => event.action === 'platform.protection.paused'))
+  await assert.rejects(
+    () => app.searchAcrossPlatforms('咖啡机', ['new-risk-platform']),
+    /账号安全保护暂停真实搜索/
+  )
 })
 
 test('reddit parser extracts public json comments', () => {
@@ -3343,6 +4116,64 @@ test('comment parser extracts modern youtube comment view models', () => {
   assert.deepEqual(comments.map((comment) => comment.text), ['新版页面评论，想了解价格', '登录态可见评论，求链接'])
   assert.equal(comments[0].likes, 2500)
   assert.equal(comments[1].likes, 3)
+})
+
+test('comment parser extracts nested youtube view model fields from logged-in pages', () => {
+  const content = {
+    platformKey: 'youtube',
+    contentId: 'abc123',
+    contentType: 'video' as const,
+    url: 'https://www.youtube.com/watch?v=abc123'
+  }
+  const youtubeHtml = `
+    <script>
+      ytInitialData = {"frameworkUpdates":{"entityBatchUpdate":{"mutations":[
+        {"payload":{"commentViewModel":{
+          "commentKey":"vm-nested-1",
+          "properties":{
+            "authorDisplayName":{"simpleText":"NestedUser"},
+            "content":{"content":"登录态新版嵌套评论，想了解购买渠道"}
+          },
+          "toolbar":{"voteCountContent":{"accessibility":{"label":"1.1K likes"}}}
+        }}},
+        {"payload":{"commentEntityPayload":{
+          "key":"entity-nested-1",
+          "author":{"displayNameText":{"runs":[{"text":"EntityNested"}]}},
+          "attributedDescription":{"content":"实体嵌套评论，求报价"},
+          "toolbar":{"likeButtonViewModel":{"accessibilityText":"42 likes"}}
+        }}}
+      ]}}};
+    </script>
+  `
+
+  const comments = parseYoutubeComments(content, youtubeHtml)
+
+  assert.deepEqual(comments.map((comment) => comment.nickname), ['NestedUser', 'EntityNested'])
+  assert.deepEqual(comments.map((comment) => comment.text), ['登录态新版嵌套评论，想了解购买渠道', '实体嵌套评论，求报价'])
+  assert.equal(comments[0].likes, 1100)
+  assert.equal(comments[1].likes, 42)
+})
+
+test('comment parser bounds oversized and deeply nested platform json', () => {
+  const content = {
+    platformKey: 'youtube',
+    contentId: 'abc123',
+    contentType: 'video' as const,
+    url: 'https://www.youtube.com/watch?v=abc123'
+  }
+  let nested: Record<string, unknown> = { commentRenderer: { commentId: 'too-deep', authorText: { simpleText: 'Deep' }, contentText: { simpleText: '不应解析到过深评论' } } }
+  for (let index = 0; index < 140; index += 1) nested = { child: nested }
+  const deepHtml = `<script>ytInitialData = ${JSON.stringify(nested)};</script>`
+  const oversizedHtml = `<script type="application/json">${JSON.stringify({ pad: 'x'.repeat(1_600_000) })}</script>`
+
+  assert.doesNotThrow(() => parseYoutubeComments(content, deepHtml))
+  assert.deepEqual(parseYoutubeComments(content, deepHtml), [])
+  assert.deepEqual(parseXiaohongshuComments({
+    platformKey: 'xiaohongshu',
+    contentId: 'xhs1',
+    contentType: 'image_text' as const,
+    url: 'https://www.xiaohongshu.com/explore/xhs1'
+  }, oversizedHtml), [])
 })
 
 test('bilibili parser extracts wbi keys and signs reply api urls', () => {

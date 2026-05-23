@@ -25,6 +25,11 @@ export interface XiaohongshuPageCursor {
   hasMore: boolean
 }
 
+const MAX_JSON_INPUT_CHARS = 1_500_000
+const MAX_JSON_SCRIPT_BLOCKS = 12
+const MAX_JSON_WALK_DEPTH = 80
+const MAX_JSON_WALK_NODES = 25_000
+
 function now(): string {
   return new Date().toISOString()
 }
@@ -44,14 +49,26 @@ function createComment(content: ContentRef, id: string, nickname: string, text: 
 }
 
 function walk(value: unknown, visitor: (node: Record<string, unknown>) => void): void {
-  if (!value || typeof value !== 'object') return
-  if (Array.isArray(value)) {
-    for (const item of value) walk(item, visitor)
-    return
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  let visited = 0
+  while (stack.length > 0 && visited < MAX_JSON_WALK_NODES) {
+    const current = stack.pop()
+    if (!current || !current.value || typeof current.value !== 'object') continue
+    if (current.depth > MAX_JSON_WALK_DEPTH) continue
+    visited += 1
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], depth: current.depth + 1 })
+      }
+      continue
+    }
+    const record = current.value as Record<string, unknown>
+    visitor(record)
+    const children = Object.values(record)
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ value: children[index], depth: current.depth + 1 })
+    }
   }
-  const record = value as Record<string, unknown>
-  visitor(record)
-  for (const child of Object.values(record)) walk(child, visitor)
 }
 
 function textFromNode(value: unknown): string {
@@ -60,10 +77,25 @@ function textFromNode(value: unknown): string {
   if (!value || typeof value !== 'object') return ''
   const node = value as Record<string, unknown>
   if (typeof node.simpleText === 'string') return node.simpleText
+  if (typeof node.content === 'string') return node.content
+  if (typeof node.text === 'string') return node.text
+  if (typeof node.accessibilityText === 'string') return node.accessibilityText
+  const accessibility = node.accessibility as Record<string, unknown> | undefined
+  if (typeof accessibility?.label === 'string') return accessibility.label
+  const accessibilityData = node.accessibilityData as Record<string, unknown> | undefined
+  if (typeof accessibilityData?.label === 'string') return accessibilityData.label
   if (Array.isArray(node.runs)) {
     return node.runs
       .map((item) => typeof item === 'object' && item && 'text' in item ? String((item as Record<string, unknown>).text ?? '') : '')
       .join('')
+  }
+  if (node.content && typeof node.content === 'object') {
+    const text = textFromNode(node.content)
+    if (text) return text
+  }
+  if (node.text && typeof node.text === 'object') {
+    const text = textFromNode(node.text)
+    if (text) return text
   }
   return ''
 }
@@ -78,17 +110,19 @@ function firstText(...values: unknown[]): string {
 
 function parseCompactNumber(value: string): number {
   const normalized = value.trim().replaceAll(',', '')
-  const match = normalized.match(/(\d+(?:\.\d+)?)/)
+  const match = normalized.match(/(\d+(?:\.\d+)?)\s*([kKmMwW万千]?)/)
   if (!match) return 0
   const amount = Number(match[1])
   if (!Number.isFinite(amount)) return 0
-  if (/[kK千]/.test(normalized)) return Math.round(amount * 1_000)
-  if (/[mM]/.test(normalized)) return Math.round(amount * 1_000_000)
-  if (/[wW万]/.test(normalized)) return Math.round(amount * 10_000)
+  const suffix = match[2]
+  if (/[kK千]/.test(suffix)) return Math.round(amount * 1_000)
+  if (/[mM]/.test(suffix)) return Math.round(amount * 1_000_000)
+  if (/[wW万]/.test(suffix)) return Math.round(amount * 10_000)
   return Math.round(amount)
 }
 
 function extractJsonObjects(text: string): unknown[] {
+  if (text.length > MAX_JSON_INPUT_CHARS) return []
   const objects: unknown[] = []
   try {
     objects.push(JSON.parse(text))
@@ -100,7 +134,8 @@ function extractJsonObjects(text: string): unknown[] {
     ...text.matchAll(/__INITIAL_STATE__\s*=\s*({[\s\S]*?});/g),
     ...text.matchAll(/<script[^>]+type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/g)
   ]
-  for (const match of candidates) {
+  for (const match of candidates.slice(0, MAX_JSON_SCRIPT_BLOCKS)) {
+    if ((match[1]?.length ?? 0) > MAX_JSON_INPUT_CHARS) continue
     try {
       objects.push(JSON.parse(match[1]))
     } catch {
@@ -302,17 +337,24 @@ function addYoutubeComment(
 function youtubeViewModelText(node: Record<string, unknown>): string {
   const content = node.content as Record<string, unknown> | undefined
   const properties = node.properties as Record<string, unknown> | undefined
+  const attributedDescription = node.attributedDescription as Record<string, unknown> | undefined
   return firstText(
     node.contentText,
     node.commentText,
     node.text,
     node.body,
+    node.commentBody,
+    node.description,
+    attributedDescription,
     content?.content,
     content?.contentText,
     content?.text,
+    content?.attributedDescription,
     properties?.content,
     properties?.contentText,
-    properties?.text
+    properties?.text,
+    properties?.commentText,
+    properties?.body
   )
 }
 
@@ -322,13 +364,18 @@ function youtubeViewModelAuthor(node: Record<string, unknown>): string {
   return firstText(
     node.authorText,
     node.authorName,
+    node.authorDisplayName,
     node.author,
     author?.displayName,
+    author?.displayNameText,
+    author?.channelName,
     author?.name,
     author?.text,
     properties?.author,
     properties?.authorName,
-    properties?.authorText
+    properties?.authorText,
+    properties?.authorDisplayName,
+    properties?.authorDisplayNameText
   ) || '未知用户'
 }
 
@@ -339,10 +386,18 @@ function youtubeViewModelLikes(node: Record<string, unknown>): number {
     node.voteCount,
     node.likeCount,
     node.voteCountText,
+    node.voteCountContent,
+    node.likeCountContent,
     toolbar?.likeCount,
     toolbar?.voteCount,
+    toolbar?.likeCountContent,
+    toolbar?.voteCountContent,
+    toolbar?.likeButton,
+    toolbar?.likeButtonViewModel,
     properties?.likeCount,
-    properties?.voteCount
+    properties?.voteCount,
+    properties?.likeCountContent,
+    properties?.voteCountContent
   ))
 }
 
@@ -352,9 +407,14 @@ function youtubeEntityText(node: Record<string, unknown>): string {
     node.content,
     node.contentText,
     node.text,
+    node.body,
+    node.commentText,
+    node.attributedDescription,
     properties?.content,
     properties?.contentText,
-    properties?.text
+    properties?.text,
+    properties?.body,
+    properties?.commentText
   )
 }
 
@@ -365,11 +425,16 @@ function youtubeEntityAuthor(node: Record<string, unknown>): string {
     node.author,
     node.authorText,
     node.authorName,
+    node.authorDisplayName,
     author?.displayName,
+    author?.displayNameText,
+    author?.channelName,
     author?.name,
     properties?.author,
     properties?.authorText,
-    properties?.authorName
+    properties?.authorName,
+    properties?.authorDisplayName,
+    properties?.authorDisplayNameText
   ) || '未知用户'
 }
 
@@ -379,10 +444,18 @@ function youtubeEntityLikes(node: Record<string, unknown>): number {
   return parseCompactNumber(firstText(
     node.likeCount,
     node.voteCount,
+    node.likeCountContent,
+    node.voteCountContent,
     toolbar?.likeCount,
     toolbar?.voteCount,
+    toolbar?.likeCountContent,
+    toolbar?.voteCountContent,
+    toolbar?.likeButton,
+    toolbar?.likeButtonViewModel,
     properties?.likeCount,
-    properties?.voteCount
+    properties?.voteCount,
+    properties?.likeCountContent,
+    properties?.voteCountContent
   ))
 }
 

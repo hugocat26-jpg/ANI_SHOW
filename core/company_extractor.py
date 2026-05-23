@@ -4,6 +4,7 @@
 使用 DuckDuckGo 搜索 + LLM 解析页面内容
 """
 import re
+import os
 import time
 import threading
 from typing import Optional
@@ -15,6 +16,13 @@ from storage.models import CompanyInfo
 from utils.logger import Logger
 
 _search_lock = threading.Lock()
+
+
+def _browser_security_args() -> list[str]:
+    if os.environ.get("CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX") != "1":
+        return []
+    Logger().warning("高风险兼容开关已启用: CLIENT_LEAD_MINER_DISABLE_BROWSER_SANDBOX=1")
+    return ["--no-sandbox"]
 
 
 class CompanySearchWorker(QThread):
@@ -73,7 +81,7 @@ class CompanyExtractor:
                     user_data_dir="",
                     headless=True,
                     channel="msedge",
-                    args=["--no-sandbox", "--disable-gpu"],
+                    args=["--disable-gpu", *_browser_security_args()],
                     viewport={"width": 1920, "height": 1080},
                     locale="zh-CN",
                 )

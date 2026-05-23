@@ -1,3 +1,4 @@
+import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { PlatformSpec, PlatformStatus } from '../domain/types.ts'
@@ -25,6 +26,33 @@ export class BrowserContextManager {
       platformKey,
       userDataDir: path.join(this.rootDir, platformKey)
     }
+  }
+
+  async clearProfiles(platformKeys?: string[]): Promise<number> {
+    const keys = platformKeys?.length ? [...new Set(platformKeys)] : await this.listProfileKeys()
+    let cleared = 0
+    for (const key of keys) {
+      if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) continue
+      const profilePath = this.resolveProfilePath(key)
+      await rm(profilePath, { recursive: true, force: true })
+      cleared += 1
+    }
+    return cleared
+  }
+
+  async countProfiles(platformKeys?: string[]): Promise<number> {
+    const keys = platformKeys?.length ? [...new Set(platformKeys)] : await this.listProfileKeys()
+    let count = 0
+    for (const key of keys) {
+      if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) continue
+      try {
+        await readdir(this.resolveProfilePath(key))
+        count += 1
+      } catch {
+        // Missing profiles are already clean.
+      }
+    }
+    return count
   }
 
   createLoginHint(spec: PlatformSpec): string {
@@ -84,6 +112,24 @@ export class BrowserContextManager {
     } finally {
       await context.close()
     }
+  }
+
+  private async listProfileKeys(): Promise<string[]> {
+    try {
+      const entries = await readdir(this.rootDir, { withFileTypes: true })
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    } catch {
+      return []
+    }
+  }
+
+  private resolveProfilePath(platformKey: string): string {
+    const resolvedRoot = path.resolve(this.rootDir)
+    const resolvedProfile = path.resolve(resolvedRoot, platformKey)
+    if (resolvedProfile !== resolvedRoot && resolvedProfile.startsWith(`${resolvedRoot}${path.sep}`)) {
+      return resolvedProfile
+    }
+    throw new Error('平台 Profile 路径不安全，已拒绝清理')
   }
 }
 

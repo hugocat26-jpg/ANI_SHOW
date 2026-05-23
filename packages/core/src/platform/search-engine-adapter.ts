@@ -5,6 +5,11 @@ import { MetadataOnlyPlatformAdapter } from './adapter.ts'
 import { extractInstagramPageCursor, extractKuaishouPageCursor, extractRedditMoreChildren, extractShortVideoCursor, extractWeiboPageCursor, extractXiaohongshuPageCursor, extractZhihuPageCursor, parseGenericHtmlComments, parseInstagramComments, parseKuaishouComments, parseRedditComments, parseShortVideoComments, parseWeiboComments, parseXiaohongshuComments, parseZhihuComments } from './comment-parser.ts'
 import { DisabledSearchPageExecutor, parseSearchResultHtml, type SearchPageExecutor } from './search-page-executor.ts'
 
+const MAX_PAGE_JSON_INPUT_CHARS = 1_500_000
+const MAX_PAGE_JSON_SCRIPT_BLOCKS = 12
+const MAX_PAGE_JSON_WALK_DEPTH = 80
+const MAX_PAGE_JSON_WALK_NODES = 25_000
+
 interface RedditCommentFetchResult {
   comments: CommentRecord[]
   errorMessage?: string
@@ -30,7 +35,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     const startedAt = Date.now()
     try {
       const statusUrl = platformStatusUrl(this.spec)
-      const html = await this.executor.fetchHtml(statusUrl, this.spec.key)
+      const html = await this.executor.fetchHtml(statusUrl, this.spec.key, { allowedDomains: this.spec.domains })
       const loggedIn = inferLoggedInFromHtml(html, this.spec.key)
       const loginRequired = inferLoginRequiredFromHtml(html)
       const shouldLogin = this.spec.requiresLogin || this.spec.capabilities.includes('login')
@@ -70,7 +75,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     const searchUrl = this.searchUrlBuilder(keyword)
 
     try {
-      const html = await this.executor.fetchHtml(searchUrl, this.spec.key)
+      const html = await this.executor.fetchHtml(searchUrl, this.spec.key, { allowedDomains: this.spec.domains })
       const parsed = parseSearchResultHtml(this.spec.key, html, input.limit)
       if (parsed.length > 0) return parsed
     } catch {
@@ -102,7 +107,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
 
     let title: string | undefined
     try {
-      const html = await this.executor.fetchHtml(parsed.toString(), this.spec.key)
+      const html = await this.executor.fetchHtml(parsed.toString(), this.spec.key, { allowedDomains: this.spec.domains })
       title = extractContentTitle(html, this.spec.key)
     } catch {
       // Content pages often require login or block automation. Keep the parsed
@@ -142,9 +147,10 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
         ? await this.executor.fetchRenderedHtml(content.url, this.spec.key, {
           scrollSteps: 4,
           scrollDelayMs: 600,
-          expandText: ['展开', '更多', '查看', 'Show more', 'Read more', 'View replies']
+          expandText: ['展开', '更多', '查看', 'Show more', 'Read more', 'View replies'],
+          allowedDomains: this.spec.domains
         })
-        : await this.executor.fetchHtml(content.url, this.spec.key)
+        : await this.executor.fetchHtml(content.url, this.spec.key, { allowedDomains: this.spec.domains })
       const platformComments = this.spec.key === 'xiaohongshu'
         ? await this.collectXiaohongshuComments(content, html)
         : ['douyin', 'tiktok'].includes(this.spec.key)
@@ -247,6 +253,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
   private async collectRedditComments(content: ContentRef): Promise<RedditCommentFetchResult> {
     try {
       const json = await this.executor.fetchText?.(redditJsonUrl(content.url), this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json'
         }
@@ -257,6 +264,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
       if (moreChildren.length > 0 && comments.length < 50) {
         try {
           const moreJson = await this.executor.fetchText?.(redditMoreChildrenUrl(content.url, content.contentId, moreChildren), this.spec.key, {
+            allowedDomains: this.spec.domains,
             headers: {
               accept: 'application/json'
             }
@@ -283,6 +291,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     }
     try {
       const nextPage = await this.executor.fetchText(xiaohongshuCommentsPageUrl(content, pageCursor.cursor), this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           referer: content.url,
@@ -306,6 +315,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     if (!nextUrl) return comments
     try {
       const nextPage = await this.executor.fetchText(nextUrl, this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           referer: content.url
@@ -328,6 +338,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     if (!nextUrl) return comments
     try {
       const nextPage = await this.executor.fetchText(nextUrl, this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           referer: content.url
@@ -348,6 +359,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     }
     try {
       const nextPage = await this.executor.fetchText(instagramCommentsPageUrl(content, pageCursor.cursor), this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           referer: content.url
@@ -370,6 +382,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     if (!nextUrl) return comments
     try {
       const nextPage = await this.executor.fetchText(nextUrl, this.spec.key, {
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           referer: content.url
@@ -391,6 +404,7 @@ export class SearchEngineAdapter extends MetadataOnlyPlatformAdapter {
     try {
       const nextPage = await this.executor.fetchText(kuaishouCommentsPageUrl(content, pageCursor.cursor), this.spec.key, {
         method: 'POST',
+        allowedDomains: this.spec.domains,
         headers: {
           accept: 'application/json',
           'content-type': 'application/json',
@@ -919,6 +933,7 @@ function titleFromRecord(platformKey: string, node: Record<string, unknown>): st
 }
 
 function extractPageJsonObjects(text: string): unknown[] {
+  if (text.length > MAX_PAGE_JSON_INPUT_CHARS) return []
   const objects: unknown[] = []
   try {
     objects.push(JSON.parse(text))
@@ -930,7 +945,8 @@ function extractPageJsonObjects(text: string): unknown[] {
     ...text.matchAll(/__INITIAL_STATE__\s*=\s*({[\s\S]*?});?\s*<\/script>/g),
     ...text.matchAll(/<script[^>]+type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/g)
   ]
-  for (const match of candidates) {
+  for (const match of candidates.slice(0, MAX_PAGE_JSON_SCRIPT_BLOCKS)) {
+    if ((match[1]?.length ?? 0) > MAX_PAGE_JSON_INPUT_CHARS) continue
     try {
       objects.push(JSON.parse(match[1]))
     } catch {
@@ -941,14 +957,26 @@ function extractPageJsonObjects(text: string): unknown[] {
 }
 
 function walkPageJson(value: unknown, visitor: (node: Record<string, unknown>) => void): void {
-  if (!value || typeof value !== 'object') return
-  if (Array.isArray(value)) {
-    for (const item of value) walkPageJson(item, visitor)
-    return
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  let visited = 0
+  while (stack.length > 0 && visited < MAX_PAGE_JSON_WALK_NODES) {
+    const current = stack.pop()
+    if (!current || !current.value || typeof current.value !== 'object') continue
+    if (current.depth > MAX_PAGE_JSON_WALK_DEPTH) continue
+    visited += 1
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], depth: current.depth + 1 })
+      }
+      continue
+    }
+    const node = current.value as Record<string, unknown>
+    visitor(node)
+    const children = Object.values(node)
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ value: children[index], depth: current.depth + 1 })
+    }
   }
-  const node = value as Record<string, unknown>
-  visitor(node)
-  for (const child of Object.values(node)) walkPageJson(child, visitor)
 }
 
 function normalizeStructuredTitle(value: string): string | undefined {
