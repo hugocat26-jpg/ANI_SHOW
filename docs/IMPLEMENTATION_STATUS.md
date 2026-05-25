@@ -1,5 +1,16 @@
 # 实施进度
 
+## 开发钩子与质量门禁
+
+- 已新增版本化 Git hook：`.githooks/pre-commit`，通过 `npm run hooks:install` 安装到本地 `core.hooksPath`。
+- hook 入口调用 `scripts/pre-commit.mjs`，先检查暂存文件，阻止把 `dist/`、`release/`、`userData/`、数据库、日志、`.env`、本地 `config.json` 等生成物或敏感配置提交。
+- hook 会对暂存文本做高置信度密钥扫描，拦截真实 API Key 形态，保留测试用短 token 和 `env:VAR_NAME` 引用。
+- 为了保持提交高效，hook 按变更范围分流：
+  - TypeScript/Electron 相关变更：执行 `npx tsc -b` 和 `npm test`。
+  - Python 旧核心相关变更：执行 `python/py -m compileall -q core storage network tests` 和 `python/py -m unittest discover -s tests`。
+  - 文档等非运行时代码变更：只执行提交内容保护检查。
+- 发布前仍需执行完整验证：`npm run build`、`npm audit --omit=dev`，涉及安装包时再执行 `npm run package`；这些不放进 pre-commit，避免日常小提交被打包链路拖慢。
+
 ## 已完成
 
 - 新架构项目骨架：Electron + React + TypeScript + Playwright + SQLite。

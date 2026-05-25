@@ -34,6 +34,9 @@
   "scripts": {
     "test": "node --test tests/**/*.test.ts",
     "check:core": "node --test tests/**/*.test.ts",
+    "check:types": "tsc -b",
+    "precommit": "node scripts/pre-commit.mjs",
+    "hooks:install": "git config core.hooksPath .githooks",
     "dev": "vite --config vite.config.mjs --host 127.0.0.1",
     "build": "tsc -b && node scripts/build-main.mjs && vite build --config vite.config.mjs",
     "electron": "electron .",
