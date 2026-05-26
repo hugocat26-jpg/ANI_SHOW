@@ -80,6 +80,16 @@ button:focus-visible {
   color: #91a1b6;
 }
 
+.brandVersion {
+  margin-left: auto;
+  padding: 3px 7px;
+  border: 1px solid #304057;
+  border-radius: 7px;
+  color: #aebbd0;
+  font-size: 11px;
+  line-height: 1;
+}
+
 .nav {
   width: 100%;
   height: 40px;
@@ -912,6 +922,39 @@ button:focus-visible {
   display: none;
 }
 
+.manualImportGuide,
+.filterBar {
+  display: flex;
+  grid-column: span 3;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.manualImportGuide span {
+  padding: 7px 10px;
+  border: 1px solid #d7e2f0;
+  border-radius: 7px;
+  background: #f8fbff;
+  color: #475569;
+  font-size: 12px;
+}
+
+.filterBar {
+  margin-bottom: 12px;
+}
+
+.filterBar input {
+  min-width: 220px;
+  flex: 1;
+}
+
+.miniButton.active {
+  border-color: #2f80ed;
+  background: #e8f1ff;
+  color: #1d4ed8;
+}
+
 .manualImportPreview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -974,6 +1017,45 @@ button:focus-visible {
 .providerRow span {
   color: #667085;
   font-size: 12px;
+}
+
+.auditList {
+  display: grid;
+  gap: 8px;
+}
+
+.auditRow {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 140px 180px;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.auditRow strong {
+  color: #172033;
+}
+
+.auditRow span,
+.auditRow small,
+.auditRow p {
+  color: #667085;
+  font-size: 12px;
+}
+
+.auditRow p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.emptyState {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #475569;
 }
 
 .panelHead.compact {

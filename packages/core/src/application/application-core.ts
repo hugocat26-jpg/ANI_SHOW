@@ -8,6 +8,7 @@ import { BrowserContextManager } from '../browser/browser-context-manager.ts'
 import { LeadMinerRepository } from '../data/repository.ts'
 import type {
   AuditEvent,
+  AuditLogFilters,
   AIAnalysisStats,
   AIFailurePolicy,
   AIProviderConfig,
@@ -488,8 +489,9 @@ export class ApplicationCore {
     }
   }
 
-  listAuditLogs(limit = 100): AuditEvent[] {
-    return this.repository.listAuditLogs(clampInteger(limit, 1, 1000, 100))
+  listAuditLogs(input: number | AuditLogFilters = 100): AuditEvent[] {
+    const filters = normalizeAuditLogFilters(input)
+    return this.repository.listAuditLogs(filters)
   }
 
   updateLeadStatus(id: string, status: LeadRecord['status']): LeadRecord {
@@ -817,6 +819,16 @@ function nextLocalMidnightIso(now = new Date()): string {
   const next = new Date(now)
   next.setHours(24, 0, 0, 0)
   return next.toISOString()
+}
+
+function normalizeAuditLogFilters(input: number | AuditLogFilters): AuditLogFilters {
+  if (typeof input === 'number') return { limit: clampInteger(input, 1, 1000, 100) }
+  return {
+    limit: clampInteger(input.limit ?? 100, 1, 1000, 100),
+    actionPrefix: input.actionPrefix === undefined || input.actionPrefix.trim() === '' ? undefined : assertStringLength(input.actionPrefix, '审计动作前缀', 1, 120),
+    targetType: input.targetType === undefined || input.targetType.trim() === '' ? undefined : assertStringLength(input.targetType, '审计目标类型', 1, 80),
+    keyword: input.keyword === undefined || input.keyword.trim() === '' ? undefined : assertStringLength(input.keyword, '审计关键词', 1, 200)
+  }
 }
 
 function assertHttpUrl(value: unknown, label: string, maxLength: number): string {

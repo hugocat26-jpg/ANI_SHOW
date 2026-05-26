@@ -6,6 +6,7 @@ import type {
   AISecretBackup,
   AIFailurePolicy,
   AuditEvent,
+  AuditLogFilters,
   CommentRecord,
   ContentRef,
   FollowUpReminder,
@@ -634,8 +635,31 @@ export class LeadMinerRepository {
     )
   }
 
-  listAuditLogs(limit = 100): AuditEvent[] {
-    const rows = this.db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?').all(limit) as Array<Record<string, unknown>>
+  listAuditLogs(input: number | AuditLogFilters = 100): AuditEvent[] {
+    const filters = typeof input === 'number' ? { limit: input } : input
+    const where: string[] = []
+    const params: Array<string | number> = []
+    if (filters.actionPrefix) {
+      where.push('action LIKE ? ESCAPE \'\\\'')
+      params.push(`${escapeSqlLike(filters.actionPrefix)}%`)
+    }
+    if (filters.targetType) {
+      where.push('target_type = ?')
+      params.push(filters.targetType)
+    }
+    if (filters.keyword) {
+      where.push('(action LIKE ? ESCAPE \'\\\' OR target_type LIKE ? ESCAPE \'\\\' OR target_id LIKE ? ESCAPE \'\\\' OR message LIKE ? ESCAPE \'\\\')')
+      const keyword = `%${escapeSqlLike(filters.keyword)}%`
+      params.push(keyword, keyword, keyword, keyword)
+    }
+    const sql = `
+      SELECT * FROM audit_logs
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `
+    params.push(Math.max(1, Math.min(1000, Math.floor(filters.limit ?? 100))))
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>
     return rows.map((row) => ({
       id: String(row.id),
       action: String(row.action),
@@ -1181,6 +1205,10 @@ function normalizeOptionalInteger(value: unknown, minimum: number, maximum: numb
   const parsed = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(parsed)) return undefined
   return Math.min(maximum, Math.max(minimum, Math.floor(parsed)))
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
 
 function normalizeImportTemplate(value: unknown): PlatformConnectorConfig['importTemplate'] | undefined {

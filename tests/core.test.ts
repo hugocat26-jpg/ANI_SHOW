@@ -1556,6 +1556,22 @@ test('repository filters leads, updates status and stores audit logs', () => {
   repository.close()
 })
 
+test('repository filters audit logs by action prefix and keyword', () => {
+  const repository = new LeadMinerRepository(':memory:')
+  const now = new Date().toISOString()
+  repository.saveAudit({ id: 'audit-manual-1', action: 'manual_import.completed', targetType: 'content', targetId: 'content-1', message: '手动导入 微信公众号 评论 2 条', createdAt: now })
+  repository.saveAudit({ id: 'audit-lead-1', action: 'lead.export', targetType: 'lead', message: '导出 1 条线索', createdAt: now })
+  repository.saveAudit({ id: 'audit-manual-2', action: 'manual_import.analysis_failed', targetType: 'comment', targetId: 'comment-1', message: 'AI 分析失败', createdAt: now })
+
+  const manualLogs = repository.listAuditLogs({ actionPrefix: 'manual_import', limit: 10 })
+  const keywordLogs = repository.listAuditLogs({ actionPrefix: 'manual_import', keyword: '公众号', limit: 10 })
+
+  assert.deepEqual(manualLogs.map((event) => event.action).sort(), ['manual_import.analysis_failed', 'manual_import.completed'])
+  assert.equal(keywordLogs.length, 1)
+  assert.equal(keywordLogs[0].id, 'audit-manual-1')
+  repository.close()
+})
+
 test('repository updates lead notes, follow-up time and bulk statuses', () => {
   const repository = new LeadMinerRepository(':memory:')
   const now = new Date().toISOString()

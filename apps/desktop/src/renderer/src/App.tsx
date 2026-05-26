@@ -2,16 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 
 import { canBatchCollectPlatform, canLoginPlatform, canSearchPlatform, requiresSingleItemCollection } from '../../../../../packages/core/src/platform/capability-policy'
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadExportPreview, LeadRecord, ManualImportConflictStrategy, ManualImportPreview, ManualImportTemplateType, ModelPricingView, PlatformConnectorPublicConfig, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, SearchResult, Task } from '../../../../../packages/core/src/index'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, AuditEvent, AuditLogFilters, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadExportPreview, LeadRecord, ManualImportConflictStrategy, ManualImportPreview, ManualImportTemplateType, ModelPricingView, PlatformConnectorPublicConfig, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, SearchResult, Task } from '../../../../../packages/core/src/index'
 import { getLeadMinerApi } from './leadMinerApi'
 
 const api = getLeadMinerApi()
-type ViewKey = 'dashboard' | 'platforms' | 'searchResults' | 'tasks' | 'leads' | 'ai' | 'settings'
+type ViewKey = 'dashboard' | 'platforms' | 'searchResults' | 'tasks' | 'leads' | 'ai' | 'audit' | 'settings'
 type ConnectorErrorFilter = 'all' | 'failed' | 'quota_exhausted' | 'auth_failed' | 'rate_limited' | 'retryable'
+type AuditPreset = 'all' | 'manual_import' | 'platform' | 'lead' | 'ai' | 'privacy'
 
 export function App() {
   const [keyword, setKeyword] = useState('咖啡机')
   const [selected, setSelected] = useState<ViewKey>('dashboard')
+  const [appVersion, setAppVersion] = useState('')
   const [platforms, setPlatforms] = useState<PlatformSpec[]>([])
   const [platformTargets, setPlatformTargets] = useState<PlatformSpec[]>([])
   const [platformConnectorConfigs, setPlatformConnectorConfigs] = useState<PlatformConnectorPublicConfig[]>([])
@@ -22,6 +24,9 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [comments, setComments] = useState<CommentRecord[]>([])
   const [leads, setLeads] = useState<LeadRecord[]>([])
+  const [auditLogs, setAuditLogs] = useState<AuditEvent[]>([])
+  const [auditPreset, setAuditPreset] = useState<AuditPreset>('manual_import')
+  const [auditKeyword, setAuditKeyword] = useState('')
   const [followUps, setFollowUps] = useState<FollowUpReminder[]>([])
   const [aiProviders, setAiProviders] = useState<AIProviderPublicConfig[]>([])
   const [aiSecretHealth, setAiSecretHealth] = useState<AISecretHealth[]>([])
@@ -95,6 +100,7 @@ export function App() {
 
   useEffect(() => {
     void refresh()
+    void api.getAppVersion().then(setAppVersion).catch(() => setAppVersion(''))
   }, [])
 
   useEffect(() => {
@@ -141,7 +147,7 @@ export function App() {
 
   async function refresh() {
     try {
-      const [nextPlatforms, nextPlatformTargets, nextConnectorConfigs, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
+      const [nextPlatforms, nextPlatformTargets, nextConnectorConfigs, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextAuditLogs, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
         api.listPlatforms(),
         api.listPlatformExpansionTargets(),
         api.listPlatformConnectorConfigs(),
@@ -150,6 +156,7 @@ export function App() {
         api.listSearchResults(),
         api.listComments(),
         api.listLeads({ status: leadStatus }),
+        api.listAuditLogs({ limit: 100, actionPrefix: auditPreset === 'all' ? undefined : auditPreset, keyword: auditKeyword || undefined }),
         api.listFollowUpReminders({ horizonDays: 7 }),
         api.listAIProviders(),
         api.listAISecretHealth(),
@@ -172,6 +179,7 @@ export function App() {
       setResults(nextResults)
       setComments(nextComments)
       setLeads(nextLeads)
+      setAuditLogs(nextAuditLogs)
       setFollowUps(nextFollowUps)
       setAiProviders(nextAIProviders)
       setAiSecretHealth(nextAISecretHealth)
@@ -184,6 +192,15 @@ export function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function loadAuditLogs(nextPreset = auditPreset, nextKeyword = auditKeyword) {
+    const filters: AuditLogFilters = {
+      limit: 100,
+      actionPrefix: nextPreset === 'all' ? undefined : nextPreset,
+      keyword: nextKeyword || undefined
+    }
+    setAuditLogs(await api.listAuditLogs(filters))
   }
 
   async function planKeyword() {
@@ -681,6 +698,7 @@ export function App() {
       setComments(await api.listComments())
       setLeads(await api.listLeads())
       setTasks(await api.listTasks())
+      await loadAuditLogs()
       setManualImportPreview(undefined)
       setNotice(`手动导入完成：新增 ${result.commentsImported} 条，跳过 ${result.duplicatesSkipped ?? 0} 条，更新 ${result.duplicatesUpdated ?? 0} 条，线索 ${result.leadsGenerated} 条`)
     } catch (error) {
@@ -854,6 +872,7 @@ export function App() {
             <strong>Lead Miner</strong>
             <small>AI 线索挖掘工作台</small>
           </div>
+          {appVersion ? <span className="brandVersion">v{appVersion}</span> : null}
         </div>
         {[
           ['dashboard', '搜索工作台'] as const,
@@ -862,6 +881,7 @@ export function App() {
           ['tasks', '任务中心'] as const,
           ['leads', '线索中心'] as const,
           ['ai', 'AI 分析'] as const,
+          ['audit', '审计日志'] as const,
           ['settings', '设置'] as const
         ].map(([key, label]) => (
           <button className={selected === key ? 'nav active' : 'nav'} key={key} onClick={() => setSelected(key)}>
@@ -1416,6 +1436,55 @@ export function App() {
             ) : null}
           </div> : null}
 
+          {isVisible(selected, 'audit') ? <div className="panel wide">
+            <div className="panelHead">
+              <h2>审计日志</h2>
+              <span>{auditLogs.length} 条</span>
+            </div>
+            <div className="filterBar">
+              {[
+                ['manual_import', '手动导入'],
+                ['platform', '平台'],
+                ['lead', '线索'],
+                ['ai', 'AI'],
+                ['privacy', '隐私'],
+                ['all', '全部']
+              ].map(([key, label]) => (
+                <button
+                  className={auditPreset === key ? 'miniButton active' : 'miniButton'}
+                  key={key}
+                  onClick={() => {
+                    const next = key as AuditPreset
+                    setAuditPreset(next)
+                    void loadAuditLogs(next)
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+              <input
+                value={auditKeyword}
+                onChange={(event) => setAuditKeyword(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void loadAuditLogs()
+                }}
+                placeholder="筛选关键词"
+              />
+              <button className="miniButton" onClick={() => void loadAuditLogs()}>筛选</button>
+            </div>
+            <div className="auditList">
+              {auditLogs.map((event) => (
+                <article className="auditRow" key={event.id}>
+                  <strong>{auditActionLabel(event.action)}</strong>
+                  <span>{formatDateTime(event.createdAt)}</span>
+                  <small>{event.targetType}{event.targetId ? ` · ${event.targetId}` : ''}</small>
+                  <p>{event.message}</p>
+                </article>
+              ))}
+              {auditLogs.length === 0 ? <div className="emptyState">没有匹配的审计记录</div> : null}
+            </div>
+          </div> : null}
+
           {isVisible(selected, 'settings') ? <div className="panel wide">
             <div className="panelHead">
               <h2>平台接入配置</h2>
@@ -1556,6 +1625,11 @@ export function App() {
                 <option value="skip_duplicates">重复评论跳过</option>
                 <option value="replace_existing">重复评论更新元数据</option>
               </select>
+              <div className="manualImportGuide">
+                <span>字段：{manualTemplateMeta(manualImportForm.templateType).fields.join(' / ')}</span>
+                <span>必填：{manualTemplateMeta(manualImportForm.templateType).required.join(' / ')}</span>
+                <span>{manualConflictLabel(manualImportForm.conflictStrategy)}</span>
+              </div>
               <input
                 value={manualImportForm.sourceUrl}
                 onChange={(event) => setManualImportForm((current) => ({ ...current, sourceUrl: event.target.value }))}
@@ -1834,6 +1908,30 @@ function connectorErrorCodeLabel(code?: string): string {
   if (code === 'server_error') return '服务异常'
   if (code === 'network_error') return '网络异常'
   return '失败'
+}
+
+function auditActionLabel(action: string): string {
+  if (action === 'manual_import.completed') return '手动导入完成'
+  if (action === 'manual_import.analysis_failed') return '导入分析失败'
+  if (action === 'platform.login.completed') return '平台登录完成'
+  if (action === 'platform.login.failed') return '平台登录失败'
+  if (action === 'platform.protection.paused') return '账号保护暂停'
+  if (action === 'lead.export') return '线索导出'
+  if (action === 'privacy.cleanup') return '隐私清理'
+  if (action.startsWith('ai.')) return `AI · ${action.slice(3)}`
+  return action
+}
+
+function manualTemplateMeta(type: ManualImportTemplateType): { fields: string[]; required: string[] } {
+  if (type === 'wechat_article_csv') return { fields: ['author', 'comment', 'likes', 'time', 'link'], required: ['comment'] }
+  if (type === 'social_comments_csv') return { fields: ['username', 'content', 'like_count', 'date', 'link'], required: ['content'] }
+  if (type === 'commerce_reviews_csv') return { fields: ['buyer', 'review', 'likes', 'created_at', 'url'], required: ['review'] }
+  return { fields: ['nickname', 'text', 'likes', 'published_at', 'url'], required: ['text'] }
+}
+
+function manualConflictLabel(strategy: ManualImportConflictStrategy): string {
+  if (strategy === 'replace_existing') return '重复项更新点赞、时间和链接'
+  return '重复项跳过，不重复分析'
 }
 
 function formatDateTime(value: string): string {

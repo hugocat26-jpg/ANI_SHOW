@@ -1,48 +1,67 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## 项目概述
 
-客户线索挖掘PC端工具 — Windows桌面应用，从社交媒体（抖音/小红书/B站/YouTube/Instagram/Facebook）采集评论，通过关键词+大模型双重机制识别购买意向，支持Excel/CSV导出。
+客户线索挖掘平台是一个 Windows 桌面优先应用，用 Electron + React + TypeScript + Playwright + SQLite 构建。当前维护主线是 TypeScript/Electron 桌面工作台；仓库中仍保留 Python/PyQt6 代码作为历史兼容层和回归参考，除非明确处理兼容问题，不再以 Python 版本作为产品主线。
+
+## GitHub 与版本规则
+
+- 远程维护目标是 GitHub：`https://github.com/hugocat26-jpg/ANI_SHOW.git`。
+- 不再向 Gitee 同步。
+- 每次提交都必须更新软件版本号。
+- 推荐版本更新命令：`npm version patch --no-git-tag-version`。
+- pre-commit hook 会要求 `package.json` 与 `package-lock.json` 同步更新且版本一致。
+- 本地启用 hook：`npm run hooks:install`。
 
 ## 常用命令
 
 ```bash
-# 运行（本地模式）
-python main.py
-
-# 运行（联网服务器模式）
-python main.py --mode server --host 0.0.0.0 --port 8765
-
-# 打包（onedir目录模式，推荐）
-python build.py --onedir
-
-# 打包（单文件模式）
-python build.py --onefile
-
-# 查看SQLite数据库
-sqlite3 ~/.client_lead_miner/data/lead_miner.db
+npm run hooks:install
+npm run check:types
+npm test
+npm run build
+npm audit --omit=dev
+npm run package
 ```
 
-## 核心架构
+Python 兼容层验证：
 
-**分层设计**：UI层(PyQt6) → 核心服务层(core/) → 数据层(storage/) + LLM层(llm/)
+```bash
+py -3 -m compileall -q core storage network tests
+py -3 -m unittest discover -s tests
+```
 
-**关键模式**：
-- `BaseScraper` — 爬虫基类（模板方法），6个平台子类各自实现 `get_comments()`，通过 `ScraperFactory.register()` 注册
-- `TaskWorker(QThread)` — 采集任务在独立线程执行，通过 `threading.Event` 控制暂停/恢复/停止，`TaskSignals(pyqtSignal)` 线程安全更新UI
-- `AppSettings` — 单例配置管理，JSON持久化到 `~/.client_lead_miner/config.json`
-- `Database` — 单例数据库，`threading.local()` 保证线程安全，WAL模式
-- `IntentRecognizer` — 关键词匹配初筛 → LLM语义校验 → 合并判定意向等级
+## 当前核心架构
 
-**采集流程**：`LinkParser.parse(url)` 解析链接 → `TaskManager.create_task()` 创建任务 → `TaskWorker.run()` 执行（scrape → recognize → extract → insert_lead）
+```mermaid
+flowchart LR
+    UI["React Renderer"] --> Preload["Electron Preload"]
+    Preload --> IPC["Trusted IPC"]
+    IPC --> App["ApplicationCore"]
+    App --> Platform["Platform Adapters"]
+    App --> Task["TaskOrchestrator"]
+    App --> AI["AIService"]
+    App --> Policy["CompliancePolicy"]
+    App --> Repo["LeadMinerRepository"]
+    Platform --> Browser["Playwright BrowserContextManager"]
+    Repo --> SQLite["SQLite"]
+```
 
-## 重要注意事项
+## 关键模块
 
-- **加密模块导入**：必须用 `from Crypto.Cipher import AES`（不是 `Cryptodome`，pycryptodome 包的模块名是 `Crypto`）
-- **浏览器**：仅使用系统Edge浏览器，Playwright配置 `channel="msedge"`，不依赖独立的Chromium安装
-- **配置文件路径**：`~/.client_lead_miner/config.json`，API密钥以AES-256-CBC加密存储
-- **数据库路径**：`~/.client_lead_miner/data/lead_miner.db`，leads表有 `UNIQUE(user_id, content_id)` 约束用于去重
-- **打包产物**：`dist/客户线索挖掘工具/` 目录包含exe和 `_internal/`，两者必须同目录。`dist_clean/` 是整理后的发布目录（含一键安装.bat）
-- **打包时注意**：`build.spec` 中 `hiddenimports` 已包含 `playwright.sync_api`、`pandas`、`openpyxl`、`Crypto`
+- `apps/desktop/src/main/index.ts`：Electron 主进程、可信 IPC、系统对话框、通知和安全边界。
+- `apps/desktop/src/preload/index.ts`：Renderer 可访问 API 白名单。
+- `apps/desktop/src/renderer/src/App.tsx`：桌面工作台 UI。
+- `packages/core/src/application/application-core.ts`：搜索、采集、导入、AI、导出、审计和隐私清理的业务入口。
+- `packages/core/src/platform/`：平台 Adapter、能力策略、评论解析和官方 API 接入。
+- `packages/core/src/data/repository.ts`：SQLite 持久化、审计日志、任务、线索、配置和密钥备份。
+- `scripts/pre-commit.mjs`：提交前质量门禁和版本号强制检查。
+
+## 维护原则
+
+- 新功能优先落在 TypeScript/Electron 主线。
+- Python/PyQt6 文件只作为兼容层维护；避免把新产品能力继续扩展到旧 UI。
+- 任何涉及平台账号、登录态、评论采集、导出、密钥、URL 请求和 IPC 的改动都要优先考虑合规、安全和审计。
+- 发布前至少执行 `npm run check:types`、`npm test`、`npm run build`、`npm audit --omit=dev`。

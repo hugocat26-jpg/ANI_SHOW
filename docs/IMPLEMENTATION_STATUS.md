@@ -1,325 +1,42 @@
 # 实施进度
 
+## 当前版本
+
+- 当前版本：`0.1.1`
+- 当前维护远程：GitHub `https://github.com/hugocat26-jpg/ANI_SHOW.git`
+- 当前产品主线：Electron + React + TypeScript + Playwright + SQLite
+- Python/PyQt6 代码定位：历史兼容层和回归参考，不再作为新功能主线
+- 旧 PyInstaller 打包入口已移除，发布以 Electron Builder 为准
+
 ## 开发钩子与质量门禁
 
 - 已新增版本化 Git hook：`.githooks/pre-commit`，通过 `npm run hooks:install` 安装到本地 `core.hooksPath`。
-- hook 入口调用 `scripts/pre-commit.mjs`，先检查暂存文件，阻止把 `dist/`、`release/`、`userData/`、数据库、日志、`.env`、本地 `config.json` 等生成物或敏感配置提交。
+- hook 入口调用 `scripts/pre-commit.mjs`，阻止提交生成物、运行数据、数据库、日志、`.env`、本地 `config.json` 等文件。
 - hook 会对暂存文本做高置信度密钥扫描，拦截真实 API Key 形态，保留测试用短 token 和 `env:VAR_NAME` 引用。
-- 为了保持提交高效，hook 按变更范围分流：
+- hook 强制每次提交同时更新 `package.json` 和 `package-lock.json` 的版本号，且两个版本必须一致；推荐用 `npm version patch --no-git-tag-version` 后再提交。
+- hook 按变更范围分流：
   - TypeScript/Electron 相关变更：执行 `npx tsc -b` 和 `npm test`。
-  - Python 旧核心相关变更：执行 `python/py -m compileall -q core storage network tests` 和 `python/py -m unittest discover -s tests`。
-  - 文档等非运行时代码变更：只执行提交内容保护检查。
-- 发布前仍需执行完整验证：`npm run build`、`npm audit --omit=dev`，涉及安装包时再执行 `npm run package`；这些不放进 pre-commit，避免日常小提交被打包链路拖慢。
+  - Python 兼容层相关变更：执行 `python/py -m compileall -q core storage network tests` 和 `python/py -m unittest discover -s tests`。
+  - 文档等非运行时代码变更：只执行提交内容保护检查和版本检查。
 
 ## 已完成
 
-- 新架构项目骨架：Electron + React + TypeScript + Playwright + SQLite。
-- 桌面端构建链路：main、preload、renderer 分别构建并可用 Electron Builder 打包。
-- 发布元数据：`package.json` 已补充通用维护者 `author`，避免构建产物缺少基础发布信息。
-- 发布资源：新增 `resources/icon.svg` 和 `resources/icon.ico`，Electron Builder 已使用项目图标生成 Windows 安装包，不再使用默认 Electron 图标。
-- 核心服务层：
-  - `ApplicationCore`
-  - `PlatformRegistry`
-  - `AIService`
-  - `CompliancePolicy`
-  - `TaskOrchestrator`
-  - `LeadMinerRepository`
-- 数据表：
-  - 平台状态
-  - 搜索会话
-  - 搜索结果
-  - 内容记录
-  - 评论记录
-  - 线索记录
-  - 任务记录
-  - 审计日志
-  - AI Provider 配置
-- 平台能力：
-  - 平台 manifest/治理元数据基础层：`PlatformSpec` 增加认证模式、风险等级、接入方式和合规提示，内置平台统一标注低/中/高风险、公开网页/登录网页/混合接入、登录要求和频率限制，为后续插件化平台接入打地基。
-  - 平台扩展目标 manifest：新增接入状态与路线说明，可表达已接入、计划接入、手动导入、官方 API 优先等状态；首批目标覆盖 Google Custom Search API、YouTube Data API、微信公众号文章、LinkedIn、Pinterest、Amazon、淘宝/天猫、京东。
-  - 平台能力策略抽象：新增 core 级能力策略函数，统一判断平台是否已激活、是否可搜索、是否可登录、是否只允许单条低频采集、是否可批量采集；核心搜索入口和桌面端 UI 均复用同一套 manifest 派生规则。
-  - 平台接入配置契约：新增官方 API/手动导入平台的配置模型，可保存启停状态、API Base URL、API Key 或 `env:VAR_NAME` 引用、每日配额、最小请求间隔和手动导入字段模板；密钥不通过列表接口回显，复用现有密钥编解码策略。
-  - 官方 API Adapter 骨架：Google Custom Search API 与 YouTube Data API 已具备配置驱动的搜索 Adapter 骨架；启用对应平台接入配置后，核心会动态注册为可搜索平台，并从配置读取 API Key/env 引用和 API Base URL。
-  - Google/Bing 搜索 Adapter。
-  - YouTube/B站搜索 Adapter。
-  - TikTok、抖音、小红书、Instagram、Facebook、X/Twitter、Reddit、微博、知乎、快手已接入第一阶段搜索 Adapter：具备真实搜索 URL、Playwright 页面抓取、通用结果解析和确定性降级。
-  - 通用搜索结果解析增加平台域名过滤和相对链接归一化，避免把外部广告、登录入口或伪造跨域链接当成有效结果。
-  - 通用平台内容链接解析基础层：TikTok、抖音、小红书、Instagram、Facebook、X/Twitter、Reddit、微博、知乎、快手可基于真实 hostname 校验域名，并从常见内容 URL 中提取稳定内容 ID 和内容类型。
-  - YouTube/B站视频内容链接解析也已收紧为真实 hostname 校验，支持主域/子域，拒绝 path/query 中伪造平台域名导致的误识别。
-  - 通用平台内容详情补全基础层：解析内容链接时会尽力抓取内容页 `og:title`、`twitter:title` 或 `<title>`，补充内容标题；登录墙/风控导致抓取失败时保持内容引用可入库、可重试。
-  - 通用平台结构化标题补全：小红书、抖音/TikTok、Instagram、微博、知乎、快手、Reddit 等平台解析内容链接时，会从页面初始化 JSON 的白名单字段中提取标题/正文摘要，补强 meta 缺失场景，并已补齐主要平台常见状态字段的回归覆盖。
-  - YouTube/B站视频内容详情补全：解析视频链接时会尽力抓取 `og:title`、`twitter:title` 或 `<title>`，避免只显示占位标题；页面不可访问时仍保留可入库的内容引用。
-  - YouTube/B站结构化标题补全：当页面 meta 缺失时，会从 `ytInitialPlayerResponse.videoDetails.title` 或 `__INITIAL_STATE__.videoData.title` 读取真实视频标题。
-  - YouTube/B站视频页短生命周期缓存：`parseContent` 已抓取的页面 HTML 会在随后评论采集时复用，减少批量解析/采集时对同一内容页的重复请求。
-  - 通用平台评论采集基础层：非 YouTube/B站平台可基于渲染页或普通 HTML 提取带评论语义的块和 `data-comment-text` 评论钩子，产出标准评论事件；未解析到评论时不生成示例假数据。
-  - Reddit 专用评论采集基础层：优先请求帖子 `.json` 结构并解析公开评论的作者、正文、分数和发布时间；接口不可用或无评论时回退到通用 HTML 解析。
-  - Reddit 更多评论扩展：识别 `.json` 中的 `more` 节点并追加一次 `api/morechildren.json` 请求，合并去重后输出评论。
-  - Reddit 采集异常语义：JSON 接口限流、权限失败且 HTML fallback 也无评论时，任务会按限流或权限语义失败，便于任务中心给出恢复建议。
-  - Reddit 评论排序策略：默认按 `new` 获取近期评论，若原链接带合法 `sort` 参数则保留用户指定排序，并同步到 `morechildren` 请求。
-  - Reddit 异常恢复细化：`.json` 和 `morechildren` 请求可区分 404 删除/不存在、429 限流、401/403/私密/隔离社区权限、5xx 服务端异常和网络超时；后续评论展开失败时保留首屏评论并向任务流输出恢复提示。
-  - 平台失败分类修复：权限/forbidden/unauthorized 语义优先于宽泛 auth 判断，避免 403 类错误被误归类为登录必需。
-  - 小红书评论解析基础层：从页面内嵌 JSON 中识别 `comment_list/comments/commentList/sub_comment` 等评论结构，提取昵称、正文、点赞数和发布时间；未命中时回退通用 HTML 评论解析。
-  - 小红书分页线索识别：从页面内嵌数据中提取 `cursor/nextCursor/endCursor` 与 `hasMore/hasNext`，为后续真实接口翻页采集预留入口。
-  - 小红书机会型翻页请求：当页面已解析到评论并识别到 cursor/hasMore 时，追加一次 `api/sns/web/v2/comment/page` 请求并合并去重；接口失败时保留首屏评论，不中断任务。
-  - 小红书请求参数增强：评论翻页请求会透传内容链接中的 `xsec_token/xsec_source`，并补充 `accept`、`referer`、`x-requested-with` 请求头，为后续真实签名/风控参数接入预留更稳定入口。
-  - 小红书采集异常语义：页面无可解析评论且出现登录、验证码/风控、限流提示时，返回标准失败事件并映射到任务中心错误分类。
-  - 抖音/TikTok 短视频评论解析基础层：从页面内嵌 JSON 中识别 `comments/comment_list` 等结构，提取评论 ID、昵称、正文、点赞数和发布时间；识别 cursor/hasMore 后续页线索，未命中时回退通用 HTML 评论解析。
-  - 抖音/TikTok 机会型翻页请求：当页面已解析到评论并识别到 cursor/hasMore 时，抖音构造 `aweme/v1/web/comment/list` 请求，TikTok 构造 `api/comment/list` 请求，带 `cursor/count`、内容 ID、`accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
-  - 抖音/TikTok 风控参数入口：短视频评论翻页请求会透传内容链接中已有的 `msToken/X-Bogus/_signature/verifyFp/fp/webid` 等参数，并为抖音、TikTok 分别保留/补充 `aid/device_platform` 基础参数；真实签名生成仍作为后续专项。
-  - 抖音/TikTok 采集异常语义：页面无可解析评论且出现登录、验证码/风控、限流提示时，返回标准失败事件并映射到任务中心错误分类。
-  - Instagram 评论解析基础层：从页面内嵌 GraphQL/JSON 中识别 `edge_media_to_parent_comment/edge_threaded_comments` 等评论结构，提取评论 ID、用户名、正文、点赞数和发布时间；识别 `page_info/end_cursor` 后续页线索，未命中时回退通用 HTML 评论解析。
-  - Instagram 机会型翻页请求：当页面已解析到评论并识别到 `end_cursor/has_next_page` 时，构造 Web GraphQL 评论下一页请求，带 `query_hash`、`shortcode/first/after` variables、`accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
-  - Instagram 采集异常语义：页面无可解析评论且出现登录、challenge/captcha、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
-  - 微博评论解析基础层：从页面内嵌 JSON 中识别微博评论结构，提取评论 ID、昵称、正文、点赞数和发布时间；识别 `max_id/cursor` 后续页线索，未命中时回退通用 HTML 评论解析。
-  - 微博机会型翻页请求：当页面已解析到评论并识别到 `max_id/cursor` 时，优先使用安全域名内的 cursor URL，否则构造 `ajax/statuses/buildComments` 下一页请求，带 `accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
-  - 微博采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
-  - 知乎评论解析基础层：从页面内嵌 JSON 或评论接口结构中识别 `data` 评论条目，提取评论 ID、作者、正文、点赞数和发布时间；识别 `paging.next/is_end` 后续页线索，未命中时回退通用 HTML 评论解析。
-  - 知乎机会型翻页请求：当页面已解析到评论并识别到 `paging.next/is_end=false` 时，校验知乎域名后追加一次下一页 JSON 请求，带 `accept` 与 `referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
-  - 知乎采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
-  - 快手评论解析基础层：从页面内嵌 JSON/GraphQL 结构中识别 `rootComments/comments/commentList` 等评论结构，提取评论 ID、作者、正文、点赞数和发布时间；支持 `w/W/万` 等紧凑点赞数。
-  - 快手机会型翻页请求：当页面已解析到评论并识别到 `pcursor/cursor/hasMore` 时，构造 `/graphql` 的 `visionCommentList` 请求，带 `photoId/pcursor`、`accept/content-type/origin/referer` 请求头并合并去重；接口失败时保留首屏评论，不中断任务。
-  - 快手采集异常语义：页面无可解析评论且出现登录、验证码/安全验证、限流或权限提示时，返回标准失败事件并映射到任务中心错误分类。
-  - YouTube/B站内容链接解析。
-  - YouTube 页面评论 JSON 解析。
-  - YouTube 评论 `runs` 文本拼接与紧凑点赞数解析。
-  - YouTube 新版评论结构解析：除旧版 `commentRenderer` 外，已支持 `commentViewModel` 与 `commentEntityPayload`，提升登录态/新版页面可见评论识别率。
-  - YouTube 评论采集异常语义：页面或 continuation 接口出现登录、验证码/风控、限流、权限不足、评论关闭等阻断提示且无可解析评论时，返回标准失败事件，不再回退到示例评论。
-  - YouTube continuation token 元数据解析，并在可用时通过 `youtubei/v1/next` 拉取后续评论页。
-  - YouTube continuation token 识别覆盖 `continuationCommand.token`、`nextContinuationData.continuation`、`reloadContinuationData.continuation` 和 `timedContinuationData.continuation` 等常见页面/接口返回形态。
-  - YouTube 首屏评论和 continuation 返回评论合并去重。
-  - YouTube continuation 链式分页上限提升到 5 页，并覆盖 `commentThreadRenderer` 包裹评论的分页返回结构。
-  - YouTube 评论采集优先使用 Playwright 渲染滚动页面：滚动评论区并尝试点击“展开/更多/Show more/Read more”后再解析评论。
-  - YouTube 评论排序策略：渲染采集时尝试打开评论排序菜单并选择 `Newest first / 最新`，失败时不阻断采集。
-  - YouTube 登录态页面评论解析增强：支持新版 `commentViewModel/commentEntityPayload` 中更深层的 `properties.content.content`、`authorDisplayName`、`voteCountContent/accessibilityText` 等字段，并修复 `42 likes` 被误判为 `42K` 的紧凑数字解析问题。
-  - YouTube 可选登录态基础：平台中心显示登录入口，通过独立 Profile 复用登录状态，并基于首页内容判断是否已登录。
-  - YouTube 登录态判断加固：以头像/账户状态等明确登录信号为准，避免页面残留 `Sign in/登录` 字符串导致已登录误判，也避免普通 topbar 被误认为已登录。
-  - YouTube continuation 登录态上下文增强：`youtubei/v1/next` 请求会携带页面 `referer/origin`、`x-goog-visitor-id`、client name/version、`VISITOR_DATA` 与 `useSsl` 上下文，提升登录态可见评论翻页请求的还原度。
-  - B站评论 JSON 解析。
-  - B站视频页 `aid/oid` 元数据提取，并基于数字 `oid` 请求评论接口。
-  - B站评论接口分页 offset 解析，默认最多采集前 3 页并去重。
-  - B站二级评论根评论识别，默认抓取前 5 个有回复的根评论楼中楼并去重。
-  - B站评论接口错误码识别：风控、权限、接口异常会作为采集失败原因返回，不再伪装为示例评论。
-  - B站风控错误返回可操作建议：稍后重试、完成登录、降低采集频率。
-  - B站评论接口可恢复错误自动重试：限流、繁忙、超时、服务端错误会按平台限流策略重试；风控/验证码类错误不盲目重试，直接提示登录/验证和降频。
-  - B站评论接口支持从视频页提取 `wbi_img` key，并在可用时为评论主接口和楼中楼接口补 `wts/w_rid` WBI 签名参数；无法提取 key 时保持无签名降级路径。
-  - B站接口错误码恢复建议细化：`-101` 映射登录必需，`-352/-412` 映射验证码/风控，`-509` 映射限流，`403/-403` 映射权限，并同步到任务中心恢复动作。
-  - B站限流频率自适应：`-509/429` 等频率错误会使用更长退避间隔，服务端错误也会适度放大重试间隔；显式配置 0 延迟时保留测试/开发快速路径。
-  - B站登录态校验：通过 `x/web-interface/nav` 检查独立 Profile 的登录状态，并在平台状态中显示是否已登录。
-  - 搜索/采集执行器复用平台独立 Profile：登录窗口保存的状态会被后续 Playwright 搜索、状态检查和评论采集使用。
-  - 平台 JSON/API 请求执行器复用 Playwright 持久化上下文：`fetchText` 改为通过 context request 发起请求，继承平台独立 Profile 的 cookie/storage，避免页面内 `fetch` 对登录态、来源头和风控请求头的限制影响评论翻页。
-  - 通用平台登录状态检查：小红书、抖音/TikTok、Instagram、微博、知乎、快手等 Search Adapter 会访问平台登录页/首页，记录延迟，并基于头像/账户菜单/退出登录等明确登录信号与登录入口信号判断已登录、需登录或网络异常。
-  - 高风险账号保护：由平台 manifest 的风险等级、接入方式和登录模式自动派生保护策略；登录型高风险平台在评论采集遇到验证码、风控、限流或权限警告后，会自动暂停真实评论采集 24 小时，并在平台状态中显示暂停原因，避免连续触发账号风险。
-  - 高风险账号保护持久化：账号保护暂停状态写入本地数据库，软件重启后仍会继续拦截真实评论采集，直到暂停时间过期。
-  - B站作为可选登录平台显示登录入口：即使无需登录也可主动登录，以提升评论采集稳定性。
-  - 评论事件流与入库闭环。
-  - 评论自动生成 AI 线索、评分和建议动作。
-- UI 工作台：
-  - 平台状态。
-  - 平台中心展示 manifest 治理信息：风险等级、登录方式、接入类型、最小请求间隔和合规提示直接展示在平台卡片中。
-  - 平台中心展示接入状态：已接入、计划接入、手动导入、API 优先等 manifest 状态可直接展示，便于后续平台扩展和用户理解能力边界。
-  - 平台中心路线图：新增只读“待接入路线图”视图，展示扩展目标 manifest 的能力、域名、风险、接入状态、合规说明和路线备注；这些目标不参与当前搜索、状态检查或登录，避免误触发未实现平台。
-  - 设置页平台接入配置：新增官方 API/手动导入平台配置表单，可保存 API Base URL、API Key/env 引用、启停状态、每日配额、请求间隔和导入字段模板，并展示已配置平台的密钥状态和配额。
-  - 平台状态展示增强：启动自动检查后按已登录、需登录/可登录、不可用三类徽标展示；延迟为 `0ms` 时也会正常显示，并在网络异常时使用红色状态提示。
-  - 平台选择。
-  - AI 关键词计划。
-  - 搜索并入库。
-  - 搜索结果展示。
-  - 采集评论按钮。
-  - 高风险平台采集保护提示：搜索结果卡片会基于平台 manifest 标注“单条低频采集”，批量采集会拦截登录型高风险平台，避免用户误批量抓取。
-  - 最新评论展示。
-  - 线索中心真实数据展示。
-  - 评论重新分析生成线索。
-  - 线索按状态和关键词筛选。
-  - 线索状态标记：待跟进、已联系、已忽略。
-  - 线索多选与批量状态更新。
-  - 线索详情面板、跟进备注、下次跟进时间。
-  - 线索高级详情页：打开线索时关联展示原评论上下文、原内容标题和来源链接。
-  - 跟进提醒面板：按逾期、今日、未来 7 天近期跟进分类展示，并可直接打开线索详情。
-  - 桌面端系统通知：刷新出逾期或今日跟进线索时弹出系统通知，同一批提醒在本会话内不重复打扰。
-  - 跟进日历导出：可将未来跟进提醒导出为标准 `.ics` 文件，导入 Outlook、Google Calendar 或系统日历。
-  - 侧边导航按模块切换视图，避免所有面板堆叠在单一页面。
-  - 线索详情支持清空下次跟进时间，并同步移出跟进提醒。
-  - 平台选择只在首次加载时填充默认项，用户可主动取消全部平台；搜索时会提示至少选择一个平台。
-  - AI 关键词扩展、平台登录、搜索失败路径均会在界面提示错误。
-  - 线索 CSV 导出，导出前经过字段校验和脱敏策略。
-  - 桌面端线索 CSV 导出接入系统保存对话框，用户可选择保存位置；浏览器预览环境保留 Blob 下载降级。
-- 登录能力：
-  - 平台独立 Profile 路径。
-  - Playwright 持久化登录窗口骨架。
-  - 登录后状态复查：平台登录窗口关闭后立即调用该平台状态检查，保存最新登录态和延迟，并返回给桌面端用于即时刷新。
-- 运营审计：
-  - 线索状态变更写入审计日志。
-  - 线索详情更新和批量状态更新写入审计日志。
-  - 线索导出写入审计日志。
-  - 跨平台搜索支持局部失败隔离：单个平台失败时保留其它平台结果，并写入部分失败审计。
-  - 评论采集与 AI 分析解耦：单条评论 AI 分析失败不会中断评论入库和采集任务。
-  - 平台状态检查支持局部失败隔离：单个平台状态异常会保存为不可用状态，不影响其它平台状态展示。
-  - 评论采集失败写入 `collect.failed` 审计日志。
-  - 高风险平台触发账号保护暂停时写入 `platform.protection.paused` 审计日志。
-  - 平台登录完成/失败写入 `platform.login.completed/platform.login.failed` 审计日志，并记录登录后状态复查结果。
-  - 评论采集任务按错误语义分类：风控/验证码为 `captcha_required`，限流为 `rate_limited`，权限为 `permission_denied`，登录为 `login_required`。
-  - 不支持采集类任务分类：评论关闭等不可采集场景会标记为 `unsupported`，任务中心展示更准确的恢复建议。
-  - 错误分类优先级修复：当平台提示同时包含“评论关闭/不可采集”和“登录”语义时，优先标记为 `unsupported`，避免任务中心错误地引导用户登录重试。
-  - 任务中心展示失败原因、恢复建议，并对采集失败任务提供登录/验证与重试采集入口。
-  - 主链路协同回归：新增端到端测试覆盖平台 Adapter 评论采集、内容入库、评论入库、AI 线索生成、任务完成、导出字段过滤和导出审计，确保核心模块组合行为可验证。
-- AI 能力：
-  - 本地规则回退模型继续可用。
-  - DeepSeek、OpenAI、通义千问、自定义兼容接口的 Provider 配置骨架。
-  - OpenAI 兼容 Chat Completions 调用客户端。
-  - 购买意向分析提示词模板和模型 JSON 输出归一化。
-  - 评论分析优先使用已启用模型，未配置、调用失败或本地规则模式时自动回退。
-  - 批量评论分析队列，支持逐条执行、失败重试和节流配置。
-  - 最近一次 AI 分析统计：模型调用数、规则回退数、估算 tokens、按模型价格表估算成本。
-  - AI 调用失败分类：缺少密钥、认证失败、限流、服务端错误、网络错误、返回格式错误。
-  - AI 队列重试策略：仅对限流、服务端错误、网络错误等可恢复失败重试。
-  - AI 失败处理策略可视化配置：最大重试、重试延迟、请求间隔、连续失败熔断阈值。
-  - AI 失败处理策略预设：均衡、保守、快速、离线优先，可在桌面端一键应用。
-  - AI 批量分析熔断状态展示，连续失败后停止继续调用模型。
-  - AI 熔断恢复建议：根据最近一次分析统计输出正常、失败项、已熔断三类恢复动作。
-  - AI 恢复建议联动任务中心：AI 失败或熔断时，任务中心会显示恢复建议和推荐策略入口。
-  - AI 自动降级建议：限流/服务端错误推荐保守策略，熔断后推荐离线优先策略，可一键应用。
-  - AI 熔断/失败系统通知：最近一次 AI 恢复建议达到 warning 或 critical 时触发桌面通知，同一建议本会话内去重。
-  - 线索评分解释：基础分、关键词加分、互动加分和模型/规则原因。
-  - 内置首批模型价格表：DeepSeek、OpenAI、通义千问常见模型。
-  - 模型价格表可通过桌面端 AI 设置面板查看，并显示当前模型是否匹配价格表。
-  - 自定义模型价格表：支持在桌面端按 Provider 和模型正则追加价格，优先覆盖内置价格，并持久化到 `app_settings`。
-  - AI 批量分析成本估算已接入自定义价格表，统计结果会按当前匹配价格计算。
-  - API Key 写入后不通过 IPC/UI 明文回显，仅显示已配置状态和尾号预览。
-  - AI 密钥存储支持可插拔编解码器；Electron 桌面端优先使用 `safeStorage` 系统加密。
-  - 兼容读取旧明文密钥，重新保存后会进入当前编解码策略。
-  - AI Provider 列表展示密钥存储状态：系统加密、明文降级、旧明文、无密钥。
-  - AI 密钥一键迁移：支持单个 Provider 或全部 Provider 按当前编解码策略重新保存。
-  - AI 密钥健康检查与轮换提醒：按未配置 Key、非加密存储、保存超过 90 天等规则输出 ok/warning/critical 建议，并在桌面端 AI 设置中展示。
-  - AI 密钥迁移前备份与恢复：迁移前自动保存 Provider 配置和原始密钥存储串到专用备份表，不解密、不回显；支持按备份 ID 恢复并写入审计日志。
-  - AI 外部密钥引用：Provider API Key 支持填写 `env:VAR_NAME`，仓库仅保存环境变量引用，运行时从当前进程环境变量读取真实密钥；健康检查会区分引用可用与环境变量缺失。
-  - 保存模型配置写入审计日志。
-- 安全加固：
-  - Electron 主进程统一通过可信来源 IPC 包装注册处理器，拒绝非本地 `file://` 渲染页或非 loopback 开发页调用敏感能力。
-  - Electron 主窗口禁止页面自行打开新窗口或跳转到非可信渲染地址；外部链接仅允许 HTTPS 并交给系统浏览器打开。
-  - 打包环境忽略 `VITE_DEV_SERVER_URL`，开发环境也仅允许 loopback 地址，避免生产包被环境变量劫持加载远程页面。
-  - AI 密钥保存不再在 `safeStorage` 不可用时降级写入明文；旧明文仍可兼容读取，重新保存需使用系统加密或 `env:VAR_NAME`。
-  - CSV/XLSX 导出会中和 `= + - @` 以及制表/回车开头的单元格，降低表格公式注入风险。
-  - 平台页面/API 请求在重定向后校验最终 URL，要求 HTTPS、平台允许域名或子域名，且拒绝本机、内网和链路本地地址。
-  - 服务端查询参数增加边界限制，数据库排序字段改为白名单，避免异常参数造成资源消耗或 SQL 拼接风险。
-  - Playwright 旧采集器默认不再使用 `--no-sandbox` 或 `--disable-web-security`；如旧环境必须兼容，需要显式设置高风险环境变量。
-  - 平台页面 JSON/HTML 解析增加输入长度、脚本块数量、递归深度和遍历节点上限，避免异常页面状态拖垮采集进程。
-  - 平台最终 URL 校验扩展 IPv6 本机、链路本地、ULA 私网和 IPv4-mapped IPv6 拒绝规则。
-  - 服务器 API 增加线索创建/更新字段长度、类型、URL、意向等级与白名单校验。
-  - AI 密钥备份按 Provider 默认保留最近 5 条，恢复旧明文备份时会用当前 codec 重新写入。
-  - AI Provider Base URL 增加出站安全校验：要求 HTTPS，拒绝本机/内网/链路本地/IPv6 私网地址；内置 Provider 仅允许官方 API 域名，自定义 Provider 只能使用公网 HTTPS 地址。
-  - TypeScript 核心入口增加参数边界：搜索关键词、平台数量、采集 URL、线索状态、批量线索 ID 数量、备注长度和审计日志 limit 均做范围校验。
-  - Electron 主进程 IPC 增加边界校验：搜索、采集、线索更新/导出、跟进日历、AI Provider、模型价格、失败策略和通知入口均在调用核心服务前验证对象类型、字段长度、枚举、URL 和数量上限。
-  - 高风险账号保护统一扩展到搜索、内容解析和评论采集：平台进入保护期后，软件重启后仍会拦截该平台真实访问，避免继续触发平台风控或账号警告。
-  - 高风险账号保护和批量采集限制已改为从平台 manifest 元数据派生，不再依赖硬编码平台 key，便于后续新增平台时统一继承治理策略。
-  - 隐私清理入口：设置页新增本机数据清理，可按项清理平台登录态/Profile、平台状态与账号保护、搜索会话、内容/评论/线索、任务记录、AI 密钥备份和审计日志；核心服务统一执行路径校验、数据库清理和审计记录。
-  - 旧 Python 密钥工具新写入改用 AES-256-GCM，旧 AES-256-CBC 密文保留只读兼容。
-  - Python 联网服务器默认构造监听地址改为 `127.0.0.1`，避免直接实例化时默认暴露到全部网卡。
-  - 高风险浏览器兼容环境变量启用时写入警告日志，便于排障和审计。
-  - 构建脚本关闭 main/preload sourcemap，`.gitignore` 增加本地 Profile 和 SQLite WAL/SHM 文件，减少隐私数据误提交。
+- Electron 主进程、preload、renderer 构建链路可用，并通过 Electron Builder 打包。
+- 桌面端显示当前软件版本，版本来自 Electron `app.getVersion()`。
+- 平台 manifest/治理元数据、平台能力策略、平台状态检查和账号保护已落地。
+- Google/Bing 搜索，YouTube/B站视频解析与评论采集基础能力已落地。
+- 抖音、TikTok、小红书、Instagram、微博、知乎、快手、Reddit 等平台已有第一阶段搜索、内容解析和评论解析能力。
+- 官方 API 接入配置、Google Custom Search API、YouTube Data API 骨架和用量可观测性已落地。
+- 手动导入管线已支持通用评论、微信公众号文章评论、社媒评论、电商评价 CSV，并支持导入预览、重复检测和冲突策略。
+- 线索中心、跟进提醒、日历导出、CSV 导出、导出脱敏预览和公式注入防护已落地。
+- AI Provider 配置、密钥加密/环境变量引用、密钥备份、失败策略、恢复建议、用量和成本估算已落地。
+- 隐私清理预估、Profile 安全删除、本地日志清理和审计日志已落地。
+- 审计日志支持按动作前缀、目标类型、关键词和数量上限筛选；桌面端新增“审计日志”入口。
+- 手动导入面板显示模板字段、必填字段和冲突策略摘要。
 
-## 当前降级策略
+## 当前待办
 
-- 搜索页抓取优先使用 Playwright。
-- 搜索引擎或平台阻断时，Adapter 会回退到确定性结果，保证任务、入库和 UI 链路可验证。
-- 跨平台搜索中某个平台抛错时，系统保留其它平台结果；若全部失败则任务标记为失败并返回错误。
-- 评论采集优先解析真实页面/接口返回的评论数据。
-- 评论数据不可解析时，视频 Adapter 会回退到示例评论事件流，确保采集任务闭环不断。
-- B站评论接口返回风控、限流或权限错误时不会回退到示例评论，避免把失败伪装为有效采集结果。
-- 评论入库优先于 AI 分析；AI 单条分析失败时写审计日志，不阻断采集任务完成。
-
-## 最近验证
-
-- 2026-05-19：`npm test` 通过，112/112。
-- 2026-05-19：`python -m compileall -q .` 通过。
-- 2026-05-19：`python -m unittest discover -s tests` 通过，15/15。
-- 2026-05-19：`npm run build` 通过。
-- 2026-05-19：`npm run package` 通过，生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：`npm audit --omit=dev` 通过，0 vulnerabilities。
-- 2026-05-19：最近完整打包轮次执行 `npm test`、`npm run build`、`npm audit --omit=dev`、`npm run package` 通过；当前 shell 未提供 `python`/`py`/`python3` 命令入口，旧 Python 验证需在安装 Python 或恢复 PATH 后再次执行。
-- 2026-05-19：本轮按要求未打包，补齐通用平台内容链接解析基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐通用平台内容详情标题补全基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐通用平台评论采集基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 Reddit 专用 JSON 评论采集基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 Reddit 更多评论扩展和限流/权限异常语义；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 Reddit 评论排序策略和平台权限失败分类修复；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐小红书页面内嵌评论解析基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐小红书分页线索识别和登录/风控/限流异常语义；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐小红书机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok 短视频评论解析和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 Instagram 页面内嵌评论解析和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐微博页面内嵌评论解析、翻页线索和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐知乎页面内嵌评论解析、翻页线索和异常语义基础层；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，细化 Reddit JSON 接口错误分类和 morechildren 展开失败恢复提示；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐知乎 `paging.next` 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐微博 `max_id/cursor` 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，增强小红书评论翻页请求的 `xsec_token/xsec_source` 透传和 Web JSON 请求头；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 Instagram `end_cursor` 机会型 Web GraphQL 评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok cursor 机会型评论翻页请求；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐抖音/TikTok 评论翻页请求的已有风控参数透传入口；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，完成主链路模块协同回归测试，覆盖 Adapter、内容/评论持久化、AI 线索、任务和导出审计；执行 `npm test`、`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，增强 YouTube continuation 登录态上下文请求头和请求体；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，扩展 YouTube continuation token 提取形态；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，将平台 JSON/API 请求切换为 Playwright context request，提升登录态 cookie/storage 复用稳定性；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，加固 YouTube 登录状态识别，覆盖已登录页面残留登录文案和匿名 topbar 两类误判；执行 `npm test` 通过 105/105，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐快手页面内嵌评论解析、`pcursor` 机会型 GraphQL 翻页请求和登录/风控/限流异常语义；执行 `npm test` 通过 108/108，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐通用 Search Adapter 登录状态和延迟检查，覆盖已登录、需登录和网络异常状态；执行 `npm test` 通过 109/109，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，优化桌面端平台状态展示，区分已登录/需登录/不可用，修复 `0ms` 延迟不显示，并同步浏览器预览 fallback 状态文案；执行 `npm test` 通过 109/109，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐平台登录后状态复查、状态持久化和登录审计；桌面端登录返回后可立即拿到最新平台状态；执行 `npm test` 通过 110/110，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，新增 AI 密钥健康检查和轮换提醒面板，覆盖未配置、需迁移、超过 90 天建议轮换和正常状态；执行 `npm test` 通过 111/111，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，新增 AI 密钥迁移前备份表、迁移前自动备份、备份列表和按备份 ID 恢复能力；执行 `npm test` 通过 112/112，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，新增 AI Provider 环境变量密钥引用 `env:VAR_NAME`，避免仓库落真实 API Key，并补齐健康检查缺失环境变量告警；执行 `npm test` 通过 113/113，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，增强 YouTube 评论解析，支持新版 `commentViewModel/commentEntityPayload` 登录态页面结构；执行 `npm test` 通过 114/114，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 YouTube 评论阻断页/接口异常语义，登录、验证码、限流、权限、评论关闭时不再生成示例评论；执行 `npm test` 通过 115/115，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐评论关闭等不可采集场景的 `unsupported` 任务分类和桌面端恢复建议；执行 `npm test` 通过 116/116，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 YouTube/B站视频链接解析时的页面元标题补全，优先使用 `og:title/twitter:title/title`；执行 `npm test` 通过 117/117，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，收紧 YouTube/B站视频链接解析的 host-only 校验，拒绝 path/query 伪造平台域名；执行 `npm test` 通过 118/118，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，增强 YouTube/B站结构化页面状态标题解析，支持 `videoDetails.title/videoData.title`；执行 `npm test` 通过 119/119，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，新增 YouTube/B站视频页 HTML 短缓存，复用 `parseContent` 抓取结果服务紧随其后的评论采集；执行 `npm test` 通过 120/120，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐通用平台内容页结构化状态标题解析，覆盖小红书 `note.title` 与抖音 `aweme_detail.desc` 等 meta 缺失场景；执行 `npm test` 通过 121/121，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，补齐 TikTok、Instagram、微博、知乎、快手、Reddit 结构化标题回归覆盖；执行 `npm test` 通过 122/122，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：本轮按要求未打包，回顾平台适配器、任务流、持久化、AI 与 UI 状态协同，修复评论关闭与登录混合提示的错误分类优先级；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev` 通过。
-- 2026-05-19：发布前清理隐私痕迹并确认 `dist/`、`release/`、`node_modules/`、本地日志均被忽略；执行 `npm test` 通过 123/123，`npm audit --omit=dev` 通过，`npm run package` 通过并生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：修复 Electron 打包后空白窗口问题：Vite renderer 改为相对资源路径，避免 `loadFile` 场景下 `/assets/...` 指向磁盘根目录；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：修复 Electron 桌面端平台登录不可用问题：preload 改为 CommonJS `index.cjs` 并由主窗口显式加载，避免前端拿不到 `window.leadMiner` 后退回浏览器预览 API；执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：修复打包版 Playwright 浏览器缺失问题：安装并随包携带项目内 Chromium，打包运行时设置 `PLAYWRIGHT_BROWSERS_PATH=0`，所有 Playwright 启动点显式使用完整 Chromium `executablePath`，避免寻找用户目录 `ms-playwright` 或缺失的 headless shell；同时移除同名 `portable` 输出目标，保留稳定 NSIS 安装版 exe。执行 `npm test` 通过 123/123，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：优化平台状态检查和登录错误体验：平台状态检查改为低并发执行，避免一次性拉起大量浏览器请求；Playwright 网络/风控错误统一压缩为可读中文提示，不再把 `Call log`、`ERR_CONNECTION_CLOSED` 等底层日志直接展示到界面。执行 `npm test` 通过 124/124，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：修复手动关闭平台登录浏览器被误判为 IPC 异常的问题：登录窗口关闭现在视为用户完成/结束登录流程，并继续复查登录态；兜底捕获登录窗口关闭异常，避免 `Target page, context or browser has been closed` 直接展示到界面。执行 `npm test` 通过 125/125，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：尝试启用 `asar` 并为 Playwright 配置 `asarUnpack`，但 electron-builder 26.8.1 + Electron 42.1.0 在 Windows 注入 asar integrity 资源时写入 `Lead Miner Workbench.exe` 失败；为保持可交付安装包，当前保留 `asar: false`，后续需升级/调整打包链路后再恢复。
-- 2026-05-19：修复抖音等平台登录态刷新不稳定问题：通用搜索适配器新增持久化浏览器 Cookie 登录态兜底识别，登录页仍显示登录文案时可按认证 Cookie 判定为已登录；桌面端同步优化固定左侧导航、搜索结果左键拖拽框选与批量采集、按钮 hover/active 反馈、右上角滑入式 toast 提示。执行 `npm test` 通过 126/126，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：修复 TikTok 等平台登录态误判：通用登录识别移除 `profile/account` 等宽泛英文词兜底，改为平台专属强 HTML 信号；Cookie 兜底改为平台专属强 Cookie 精确匹配，`ttwid`、`passport_csrf_token`、`csrftoken`、`fr`、`webId` 等游客/风控 Cookie 不再计为已登录。执行 `npm test` 通过 128/128，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-19：优化采集可见性和搜索结果信息架构：左侧新增独立“搜索结果”入口，搜索结果不再只依附搜索工作台；采集单条或批量结果时显示顶部进度条、当前采集序号/标题，并在每条搜索结果卡片展示等待中、采集中、已完成、失败及评论数量/错误原因。执行 `npm test` 通过 128/128，`npm run build`、`npm audit --omit=dev`、`npm run package` 通过，已重新生成 `release/Lead Miner Workbench-0.1.0-x64.exe`。
-- 2026-05-20：按 Codex Security 复审修复 Electron IPC/导航/开发地址加载、密钥明文降级、导出公式注入、平台请求重定向 SSRF、服务端参数边界、SQL 排序白名单、旧 Playwright 危险参数默认启用等问题。执行 `npm test` 通过 130/130，`npx tsc -b` 通过，`python -m compileall -q core storage network tests` 通过，定向 Python 导出回归 2/2 通过，`npm run build` 通过，`npm audit --omit=dev` 通过。
-- 2026-05-20：按下一步计划完善 YouTube 登录态评论解析，补齐新版嵌套 view model/entity payload 字段识别，并修复英文 likes 文案导致点赞数误乘 1000 的问题；执行 `npm test` 通过 131/131，`npm run build` 通过。
-- 2026-05-20：按安全完善计划补齐平台解析资源上限、IPv6/特殊地址 SSRF 拦截、服务器 API 输入边界、AI 密钥备份保留与恢复重加密、高风险浏览器开关日志告警；执行 `npm test` 通过 133/133，`npx tsc -b` 通过，`npm run build` 通过，`npm audit --omit=dev` 通过，`python -m compileall -q core storage network tests` 通过。当前 bundled Python 缺少 `flask/requests/PyQt6`，定向 Python 可运行回归通过 2/2、服务端用例因缺 Flask 跳过，完整 `unittest discover` 因缺 `requests/PyQt6` 出现导入错误，需在完整 Python 依赖环境复跑。
-- 2026-05-20：收到账号官方警告后补充账号保护机制：小红书、抖音、TikTok、Instagram、Facebook、微博、快手等高风险平台禁止批量评论采集，单条采集遇到验证码/限流/权限风控后自动暂停真实采集 24 小时并写入审计，平台状态同步展示暂停原因；执行 `npx tsc -b`、`npm test` 通过 133/133、`npm run build`、`npm audit --omit=dev`、`py -m compileall -q core storage network tests` 通过。本轮未使用真实账号进行联网采集验证。
-- 2026-05-20：继续安全地基加固：账号保护暂停状态持久化到 SQLite，AI Provider Base URL 增加公网 HTTPS/官方域名/内网地址拦截，核心入口补充参数边界，旧 Python 密钥新写入切换 AES-GCM，服务器默认监听收紧为 `127.0.0.1`。执行 `npx tsc -b`、`npm test` 通过 134/134、bundled Python `compileall` 通过；本沙箱内 `npm run build` 因 esbuild 读取上层目录被 Access denied 拦截，`npm audit --omit=dev` 因 registry/cache 权限失败，已按规则请求沙箱外验证但审批超时，需在完整权限环境复跑。
-- 2026-05-20：按升级计划执行 P0/P1 收口：Electron IPC 入口补齐参数白名单和边界校验，高风险账号保护从评论采集扩展到搜索和内容解析，并补充重启后保护期拦截回归。执行 `npx tsc -b`、`npm test` 通过 134/134、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19；本机 `python.exe` 为 Windows App Alias，直接执行会空失败，Python 验证使用 `py`。
-- 2026-05-20：继续执行 P1 隐私治理：新增 core 级隐私清理 API、平台 Profile 安全删除、SQLite 分项清理方法、Electron IPC 与设置页入口，并补充回归覆盖 Profile/平台状态/搜索/评论/线索/任务/AI 密钥备份清理。执行 `npx tsc -b`、`npm test` 通过 135/135、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19。
-- 2026-05-20：启动 P2 平台插件化地基：扩展平台 manifest 元数据，内置平台统一声明认证模式、风险等级、接入方式和合规提示，平台中心同步展示治理信息，并补充 manifest 回归测试。执行 `npx tsc -b`、`npm test` 通过 136/136、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19。
-- 2026-05-20：继续 P2 平台治理地基：高风险账号保护和批量采集限制改为从 manifest 风险等级、登录模式和接入方式派生，新增自定义高风险平台回归测试，减少新增平台时的硬编码清单维护。执行 `npx tsc -b`、`npm test` 通过 137/137、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19。
-- 2026-05-20：继续 P2 平台扩展路线：`PlatformSpec` 新增接入状态和路线说明，新增 `platformExpansionTargetSpecs` 描述后续国内外主流平台与官方 API/手动导入优先策略，平台中心同步展示接入状态，并补充扩展目标 manifest 回归测试。执行 `npx tsc -b`、`npm test` 通过 138/138、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19。
-- 2026-05-20：继续 P2 桌面路线图：Electron IPC/preload/renderer 新增只读扩展目标接口，平台中心展示“待接入路线图”，未实现平台不进入搜索、登录或状态检查链路。执行 `npx tsc -b`、`npm test` 通过 138/138、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、`py -m compileall -q core storage network tests` 通过、`py -m unittest discover -s tests` 通过 19/19。
-- 2026-05-20：继续 P2 能力策略抽象：新增平台能力策略模块，核心搜索入口拒绝 manifest 未激活/未开放搜索的平台，桌面端搜索选择、登录按钮和批量采集限制统一复用该策略，并补充路线图目标不可执行的回归测试。执行 `npx tsc -b` 通过、`npm test` 通过 139/139、bundled Python `compileall` 通过；当前沙箱内 `npm run build`/`vite build`/`node scripts/build-main.mjs` 均因 esbuild 读取上层目录被 `Access is denied` 拦截，`npm audit --omit=dev` 因网络/cache 权限失败，已按规则请求沙箱外验证但审批连续超时；bundled Python 完整 `unittest discover` 因缺少 `requests/PyQt6` 出现 4 个导入错误、5 个跳过，需在完整依赖环境复跑。
-- 2026-05-20：继续 P2 接入配置契约：新增 `PlatformConnectorConfig`/公开配置类型、SQLite `app_settings` 持久化、平台接入密钥/env 引用解析、配额/请求间隔和手动导入模板归一化，ApplicationCore 增加保存与列表入口并写入审计。执行 `npx tsc -b` 通过、`npm test` 通过 141/141、bundled Python `compileall` 通过；`npm run build`、`npm audit --omit=dev` 和完整 Python 回归仍受当前沙箱/依赖限制，需在完整权限和依赖环境复跑。
-- 2026-05-20：继续 P2 配置入口：Electron IPC/preload 暴露平台接入配置列表与保存接口，设置页新增平台接入配置表单和已配置列表，后续 Google/YouTube API Adapter 可直接读取同一配置契约。执行 `npx tsc -b` 通过、`npm test` 通过 141/141；构建、审计与完整 Python 回归限制同上一条。
-- 2026-05-20：继续 P2 官方 API Adapter：新增配置驱动的 `OfficialApiPlatformAdapter`，支持 Google Custom Search API 和 YouTube Data API 搜索结果解析；启用平台接入配置后 ApplicationCore 会动态注册官方 API 平台为可搜索平台。执行 `npx tsc -b` 通过、`npm test` 通过 143/143、bundled Python `compileall` 通过；构建、审计与完整 Python 回归限制同上一条。
-- 2026-05-20：继续 P2 手动导入管线：新增本地 CSV 评论解析器、手动内容导入域模型、ApplicationCore 入库/任务/审计/线索分析流程，支持微信公众号文章链接和通用评论 CSV，不进行真实平台联网抓取；Electron IPC/preload 与设置页新增“手动内容导入”入口。执行 `npx tsc -b` 通过、`npm test` 通过 145/145、bundled Python `compileall` 通过；当前沙箱内 `npm run build` 仍因 esbuild 读取上层目录被 `Access is denied` 拦截，`npm audit --omit=dev` 因 registry/cache 权限失败，沙箱外构建/审计审批超时，需在完整权限环境复跑。
-- 2026-05-20：继续 P2 官方 API 可观测性：平台接入配置新增每日调用量、剩余额度、最近成功/失败状态和最近错误信息；官方 API 搜索成功/失败后自动写入用量记录，设置页同步展示今日用量和错误摘要。执行 `npx tsc -b` 通过、`npm test` 通过 146/146、bundled Python `compileall` 通过；构建、审计限制同上一条。
-- 2026-05-20：按 Codex Security 修复工作流继续执行手动导入安全收口：新增导入前预览 API，预览和实际导入均按同一内容内“昵称+正文”识别重复评论；实际导入会跳过重复项并在结果/审计中提示，避免重复 CSV 反复入库触发重复 AI 分析；设置页支持选择本地 CSV、下载模板、预览新评论/重复评论后再导入。执行 `npx tsc -b` 通过、`npm test -- --test-name-pattern "manual"` 通过、`npm test` 通过 146/146、bundled Python `compileall` 通过；`npm run build` 仍被沙箱 esbuild 上层目录访问拦截，`npm audit --omit=dev` 仍受 registry/cache 权限限制，沙箱外审批超时。
-- 2026-05-20：继续 Codex Security 隐私治理计划：新增清理前预估 API，统计平台 Profile、平台状态、搜索、评论/内容、线索、任务、审计、AI 密钥备份和本地日志；新增安全日志文件管理器，仅清理日志根目录内 `.log/.txt/.jsonl/.ndjson`；线索导出新增脱敏预览；设置页增加清理预估和导出预览。修复 renderer 误从 core 总出口导入运行时函数导致 Node-only 模块进入前端包的问题，改为从浏览器安全的 capability-policy 模块导入。执行 `npx tsc -b` 通过、`npm test -- --test-name-pattern "privacy|formula"` 通过、`npm test` 通过 146/146、`npm run build` 通过、`npm audit --omit=dev` 通过 0 vulnerabilities、bundled Python `compileall` 通过。
-- 2026-05-20：继续 Codex Security 官方 API 治理：`OfficialApiPlatformAdapter` 新增 `OfficialApiError` 分类，覆盖无效请求、认证失败、权限不足、配额耗尽、限流、服务端异常和网络异常；非 2xx 响应会读取官方 JSON 错误 reason/message，给出中文处理建议和是否可重试标识，Google/YouTube 官方 API 配额或认证错误可被平台配置用量面板准确展示。执行 `npx tsc -b` 通过、`npm test -- --test-name-pattern "official api"` 通过、`npm test` 通过 147/147、bundled Python `compileall` 通过；当前会话沙箱内 `npm run build` 仍因 esbuild 上层目录读取权限被拦截，`npm audit --omit=dev` 仍受 registry/cache 权限限制，沙箱外审批超时，需在完整权限环境复跑。
-- 2026-05-20：继续 Codex Security 手动导入治理：新增手动导入模板类型，覆盖通用评论、微信公众号文章评论、社媒评论和电商评价 CSV；导入预览显示模板类型、冲突策略和可更新重复项；导入冲突策略支持默认跳过重复或更新已有重复评论的点赞/发布时间/链接元数据，避免重复 CSV 反复触发 AI 分析，同时保留受控合并能力；桌面设置页同步新增模板类型、冲突策略和对应模板下载。执行 `npx tsc -b` 通过、`npm test -- --test-name-pattern "manual import"` 通过、`npm test` 通过 149/149、bundled Python `compileall` 通过；当前会话沙箱内 `npm run build` 仍因 esbuild 上层目录读取权限被拦截，`npm audit --omit=dev` 仍受 registry/cache 权限限制，沙箱外审批超时，需在完整权限环境复跑。
-- 2026-05-20：继续 Codex Security 官方 API 可观测性：平台接入用量记录新增结构化错误码、是否可重试和配额重置提醒；`ApplicationCore` 会把 `OfficialApiError` 的 `quota_exhausted/auth_failed/rate_limited` 等分类落库；设置页新增失败筛选、配额耗尽/认证失败/限流/可重试筛选、中文失败原因和预计重置时间展示。执行 `npx tsc -b` 通过、`npm test -- --test-name-pattern "official api"` 通过、`npm test` 通过 150/150、bundled Python `compileall` 通过；当前会话沙箱内 `npm run build` 仍因 esbuild 上层目录读取权限被拦截，`npm audit --omit=dev` 仍受 registry/cache 权限限制，沙箱外审批超时，需在完整权限环境复跑。
-
-## 尚未完成
-
-- YouTube 登录态下更完整的评论抓取：已补强 continuation 请求上下文，仍需继续扩展更多登录态可见评论入口和真实页面差异样本。
-- 抖音、TikTok、Instagram、微博、知乎、快手等平台深度 Adapter：登录态搜索、内容详情补全、评论采集和平台专用 DOM/API 适配；抖音/TikTok、Instagram、微博、知乎、小红书、快手仍需扩展更多真实接口入口和完整风控签名参数。
-- 专用 Key Vault / 系统凭据管理与团队级权限策略。
-- 代码签名、asar 恢复和发布配置完善。
-
-## 下一步计划
-
-1. 继续 P2：手动导入增加更多模板类型和导入后冲突合并策略的界面说明与审计筛选。
-2. 继续 P2：官方 API 用量面板增加历史窗口和按天趋势摘要。
-3. 继续完善发布治理：代码签名、asar 恢复和发布配置完善。
+1. 官方 API 用量面板增加历史窗口和按天趋势摘要。
+2. 完善发布治理：代码签名、asar 恢复和发布配置。
+3. 在账号安全策略下优先扩展低风险官方 API 和手动导入平台。
+4. 继续补强 YouTube 登录态评论抓取和国内高风险平台的低频、安全采集边界。

@@ -1,4 +1,4 @@
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportPreview, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ManualImportInput, ManualImportPreview, ManualImportResult, ModelPricingView, PlatformConnectorConfig, PlatformConnectorPublicConfig, PlatformLoginResult, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, PrivacyCleanupResult, SearchResult, Task } from '../../../../../packages/core/src/index'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, AuditLogFilters, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportPreview, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ManualImportInput, ManualImportPreview, ManualImportResult, ModelPricingView, PlatformConnectorConfig, PlatformConnectorPublicConfig, PlatformLoginResult, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, PrivacyCleanupResult, SearchResult, Task } from '../../../../../packages/core/src/index'
 
 export interface LeadMinerApi {
   listPlatforms(): Promise<PlatformSpec[]>
@@ -26,7 +26,8 @@ export interface LeadMinerApi {
   previewLeadExport(input?: LeadExportOptions): Promise<LeadExportPreview>
   exportLeads(input?: LeadExportOptions): Promise<LeadExportResult>
   exportLeadsToFile?(input?: LeadExportOptions): Promise<{ canceled: boolean; filePath?: string; count: number }>
-  listAuditLogs(limit?: number): Promise<AuditEvent[]>
+  listAuditLogs(input?: number | AuditLogFilters): Promise<AuditEvent[]>
+  getAppVersion(): Promise<string>
   listAIProviders(): Promise<AIProviderPublicConfig[]>
   listAISecretHealth(): Promise<AISecretHealth[]>
   saveAIProvider(input: Omit<AIProviderConfig, 'updatedAt'>): Promise<AIProviderPublicConfig>
@@ -55,6 +56,9 @@ declare global {
 }
 
 export const fallbackApi: LeadMinerApi = {
+  async getAppVersion() {
+    return '0.1.1'
+  },
   async listPlatforms() {
     return [
       { key: 'google', name: 'Google', category: 'search_engine', domains: ['google.com'], requiresLogin: false, capabilities: ['search', 'status'], rateLimit: { concurrency: 1, minDelayMs: 600, maxRetries: 2 } },

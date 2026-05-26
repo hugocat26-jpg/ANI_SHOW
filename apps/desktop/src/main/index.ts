@@ -193,7 +193,8 @@ handleTrusted('leads:exportToFile', async (_event, input) => {
   await writeFile(filePath, result.content, 'utf8')
   return { canceled: false, filePath, count: result.count }
 })
-handleTrusted('audit:list', (_event, limit) => core.listAuditLogs(limit === undefined ? undefined : clampInteger(limit, '审计日志数量', 1, 1000)))
+handleTrusted('audit:list', (_event, input) => core.listAuditLogs(assertAuditLogInput(input)))
+handleTrusted('app:version', () => app.getVersion())
 handleTrusted('ai:listProviders', () => core.listAIProviders())
 handleTrusted('ai:secretHealth', () => core.listAISecretHealth())
 handleTrusted('ai:saveProvider', (_event, input) => core.saveAIProviderConfig(assertAIProviderInput(input)))
@@ -459,6 +460,18 @@ function assertManualComments(input: unknown): Array<{ nickname?: string; text: 
       contentUrl: assertOptionalString(value.contentUrl, '评论链接', 2048)
     }
   })
+}
+
+function assertAuditLogInput(input: unknown): number | { limit?: number; actionPrefix?: string; targetType?: string; keyword?: string } {
+  if (input === undefined) return 100
+  if (typeof input === 'number') return clampInteger(input, '审计日志数量', 1, 1000)
+  const value = assertObject(input, '审计日志筛选')
+  return {
+    limit: value.limit === undefined ? undefined : clampInteger(value.limit, '审计日志数量', 1, 1000),
+    actionPrefix: assertOptionalString(value.actionPrefix, '审计动作前缀', 120),
+    targetType: assertOptionalString(value.targetType, '审计目标类型', 80),
+    keyword: assertOptionalString(value.keyword, '审计关键词', 200)
+  }
 }
 
 function assertCustomModelPricing(input: unknown): ModelPricingView[] {

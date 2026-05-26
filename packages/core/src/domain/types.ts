@@ -424,3 +424,10 @@ export interface AuditEvent {
   message: string
   createdAt: string
 }
+
+export interface AuditLogFilters {
+  limit?: number
+  actionPrefix?: string
+  targetType?: string
+  keyword?: string
+}

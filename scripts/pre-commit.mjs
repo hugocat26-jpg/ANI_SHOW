@@ -81,6 +81,56 @@ function stagedContent(file) {
   return result.stdout ?? ''
 }
 
+function headContent(file) {
+  const result = spawnSync('git', ['show', `HEAD:${file}`], {
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024
+  })
+  return result.status === 0 ? result.stdout ?? '' : ''
+}
+
+function parseJson(content, file) {
+  try {
+    return JSON.parse(content)
+  } catch (error) {
+    console.error(`pre-commit: ${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
+
+function packageLockVersion(lock) {
+  return lock?.packages?.['']?.version ?? lock?.version
+}
+
+function assertVersionBump(staged) {
+  if (!staged.includes('package.json') || !staged.includes('package-lock.json')) {
+    console.error('pre-commit: every commit must update the software version.')
+    console.error('Stage both package.json and package-lock.json after running `npm version patch --no-git-tag-version` or another deliberate version bump.')
+    process.exit(1)
+  }
+
+  const nextPackage = parseJson(stagedContent('package.json'), 'package.json')
+  const previousPackageText = headContent('package.json')
+  const previousPackage = previousPackageText ? parseJson(previousPackageText, 'HEAD:package.json') : undefined
+  const nextLock = parseJson(stagedContent('package-lock.json'), 'package-lock.json')
+  const previousVersion = previousPackage?.version
+  const nextVersion = nextPackage?.version
+  const lockVersion = packageLockVersion(nextLock)
+
+  if (typeof nextVersion !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(nextVersion)) {
+    console.error(`pre-commit: package.json version must be a semver-like string, got ${JSON.stringify(nextVersion)}.`)
+    process.exit(1)
+  }
+  if (nextVersion === previousVersion) {
+    console.error(`pre-commit: package.json version is still ${nextVersion}; bump it before committing.`)
+    process.exit(1)
+  }
+  if (lockVersion !== nextVersion) {
+    console.error(`pre-commit: package-lock.json version (${lockVersion}) does not match package.json (${nextVersion}).`)
+    process.exit(1)
+  }
+}
+
 const stagedFiles = capture('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'])
   .split(/\r?\n/)
   .map((file) => file.trim())
@@ -142,6 +192,8 @@ if (secretHits.length > 0) {
   console.error('Use env:VAR_NAME references or local config instead of committing secrets.')
   process.exit(1)
 }
+
+assertVersionBump(stagedFiles)
 
 if (args.has(SKIP_FLAG)) {
   console.log('pre-commit: cheap guards passed; command checks skipped by --skip-checks.')
