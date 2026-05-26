@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 当前版本：`0.1.1`
+- 当前版本：`0.1.2`
 - 当前维护远程：GitHub `https://github.com/hugocat26-jpg/ANI_SHOW.git`
 - 当前产品主线：Electron + React + TypeScript + Playwright + SQLite
 - Python/PyQt6 代码定位：历史兼容层和回归参考，不再作为新功能主线
@@ -36,7 +36,10 @@
 
 ## 当前待办
 
-1. 官方 API 用量面板增加历史窗口和按天趋势摘要。
-2. 完善发布治理：代码签名、asar 恢复和发布配置。
-3. 在账号安全策略下优先扩展低风险官方 API 和手动导入平台。
-4. 继续补强 YouTube 登录态评论抓取和国内高风险平台的低频、安全采集边界。
+当前待办已整理到 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)，按 P1-P5 推进：
+
+1. P1：官方 API 用量历史与趋势。
+2. P2：工作台前端性能和信息架构。
+3. P3：安全专项扫描和高风险边界。
+4. P4：发布治理。
+5. P5：平台扩展策略。

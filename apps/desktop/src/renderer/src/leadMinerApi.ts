@@ -57,7 +57,7 @@ declare global {
 
 export const fallbackApi: LeadMinerApi = {
   async getAppVersion() {
-    return '0.1.1'
+    return '0.1.2'
   },
   async listPlatforms() {
     return [
