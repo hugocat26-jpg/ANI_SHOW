@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 当前版本：`0.1.3`
+- 当前版本：`0.1.4`
 - 当前维护远程：GitHub `https://github.com/hugocat26-jpg/ANI_SHOW.git`
 - 当前产品主线：Electron + React + TypeScript + Playwright + SQLite
 - Python/PyQt6 代码定位：历史兼容层和回归参考，不再作为新功能主线

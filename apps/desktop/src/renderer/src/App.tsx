@@ -1584,60 +1584,58 @@ export function App() {
                 ))}
               </div>
             ) : null}
-            {platformConnectorConfigs.length > 0 ? (
-              <div className="usagePanel">
-                <div className="panelHead compact">
-                  <h3>官方 API 用量趋势</h3>
-                  <span>近 {platformConnectorUsageHistory.days} 天</span>
-                </div>
-                <div className="filterBar compact">
-                  {[7, 30].map((days) => (
-                    <button
-                      className={connectorUsageDays === days ? 'miniButton active' : 'miniButton'}
-                      key={days}
-                      onClick={() => {
-                        const next = days as 7 | 30
-                        setConnectorUsageDays(next)
-                        void loadConnectorUsageHistory(next)
-                      }}
-                    >
-                      {days} 天
-                    </button>
-                  ))}
-                  <span>请求 {platformConnectorUsageHistory.totals.totalRequests}</span>
-                  <span>成功 {platformConnectorUsageHistory.totals.successCount}</span>
-                  <span>失败 {platformConnectorUsageHistory.totals.failureCount}</span>
-                  <span>配额耗尽 {platformConnectorUsageHistory.totals.quotaExhaustedCount}</span>
-                  <span>可重试 {platformConnectorUsageHistory.totals.retryableFailureCount}</span>
-                </div>
-                {platformConnectorUsageHistory.rows.length > 0 ? (
-                  <div className="usageTable">
-                    <div className="usageHeader">
-                      <span>日期</span>
-                      <span>平台</span>
-                      <span>请求</span>
-                      <span>成功</span>
-                      <span>失败</span>
-                      <span>配额</span>
-                      <span>可重试</span>
-                      <span>最近状态</span>
-                    </div>
-                    {platformConnectorUsageHistory.rows.map((row) => (
-                      <div className="usageRow" key={`${row.platformKey}:${row.date}`}>
-                        <span>{row.date}</span>
-                        <span>{platformTargets.find((platform) => platform.key === row.platformKey)?.name ?? row.platformKey}</span>
-                        <span>{row.totalRequests}</span>
-                        <span>{row.successCount}</span>
-                        <span>{row.failureCount}</span>
-                        <span>{row.quotaExhaustedCount}</span>
-                        <span>{row.retryableFailureCount}</span>
-                        <span>{connectorUsageStatusText(row.lastStatus, row.lastErrorCode)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : <div className="emptyState">近 {platformConnectorUsageHistory.days} 天暂无官方 API 调用记录</div>}
+            <div className="usagePanel">
+              <div className="panelHead compact">
+                <h3>官方 API 用量趋势</h3>
+                <span>近 {platformConnectorUsageHistory.days} 天</span>
               </div>
-            ) : null}
+              <div className="filterBar compact">
+                {[7, 30].map((days) => (
+                  <button
+                    className={connectorUsageDays === days ? 'miniButton active' : 'miniButton'}
+                    key={days}
+                    onClick={() => {
+                      const next = days as 7 | 30
+                      setConnectorUsageDays(next)
+                      void loadConnectorUsageHistory(next)
+                    }}
+                  >
+                    {days} 天
+                  </button>
+                ))}
+                <span>请求 {platformConnectorUsageHistory.totals.totalRequests}</span>
+                <span>成功 {platformConnectorUsageHistory.totals.successCount}</span>
+                <span>失败 {platformConnectorUsageHistory.totals.failureCount}</span>
+                <span>配额耗尽 {platformConnectorUsageHistory.totals.quotaExhaustedCount}</span>
+                <span>可重试 {platformConnectorUsageHistory.totals.retryableFailureCount}</span>
+              </div>
+              {platformConnectorUsageHistory.rows.length > 0 ? (
+                <div className="usageTable">
+                  <div className="usageHeader">
+                    <span>日期</span>
+                    <span>平台</span>
+                    <span>请求</span>
+                    <span>成功</span>
+                    <span>失败</span>
+                    <span>配额</span>
+                    <span>可重试</span>
+                    <span>最近状态</span>
+                  </div>
+                  {platformConnectorUsageHistory.rows.map((row) => (
+                    <div className="usageRow" key={`${row.platformKey}:${row.date}`}>
+                      <span>{row.date}</span>
+                      <span>{platformTargets.find((platform) => platform.key === row.platformKey)?.name ?? row.platformKey}</span>
+                      <span>{row.totalRequests}</span>
+                      <span>{row.successCount}</span>
+                      <span>{row.failureCount}</span>
+                      <span>{row.quotaExhaustedCount}</span>
+                      <span>{row.retryableFailureCount}</span>
+                      <span>{connectorUsageStatusText(row.lastStatus, row.lastErrorCode)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="emptyState">近 {platformConnectorUsageHistory.days} 天暂无官方 API 调用记录</div>}
+            </div>
             {visibleConnectorConfigs.length > 0 ? (
               <div className="providerList">
                 {visibleConnectorConfigs.map((config) => (
