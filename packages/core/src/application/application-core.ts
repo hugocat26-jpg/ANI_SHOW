@@ -33,6 +33,7 @@ import type {
   ManualImportResult,
   PlatformConnectorConfig,
   PlatformConnectorPublicConfig,
+  PlatformConnectorUsageHistory,
   PlatformErrorCode,
   PlatformStatus,
   PrivacyCleanupEstimate,
@@ -113,6 +114,10 @@ export class ApplicationCore {
 
   listPlatformConnectorConfigs(): PlatformConnectorPublicConfig[] {
     return this.repository.listPlatformConnectorConfigs()
+  }
+
+  listPlatformConnectorUsageHistory(days = 7): PlatformConnectorUsageHistory {
+    return this.repository.listPlatformConnectorUsageHistory(clampInteger(days, 1, 30, 7))
   }
 
   savePlatformConnectorConfig(input: Omit<PlatformConnectorConfig, 'updatedAt'>): PlatformConnectorPublicConfig {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 
 import { canBatchCollectPlatform, canLoginPlatform, canSearchPlatform, requiresSingleItemCollection } from '../../../../../packages/core/src/platform/capability-policy'
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, AuditEvent, AuditLogFilters, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadExportPreview, LeadRecord, ManualImportConflictStrategy, ManualImportPreview, ManualImportTemplateType, ModelPricingView, PlatformConnectorPublicConfig, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, SearchResult, Task } from '../../../../../packages/core/src/index'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderKey, AIProviderPublicConfig, AIRecoveryAdvice, AISecretHealth, AuditEvent, AuditLogFilters, CommentRecord, FollowUpReminder, KeywordPlan, LeadDetail, LeadExportPreview, LeadRecord, ManualImportConflictStrategy, ManualImportPreview, ManualImportTemplateType, ModelPricingView, PlatformConnectorPublicConfig, PlatformConnectorUsageHistory, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, SearchResult, Task } from '../../../../../packages/core/src/index'
 import { getLeadMinerApi } from './leadMinerApi'
 
 const api = getLeadMinerApi()
@@ -17,6 +17,8 @@ export function App() {
   const [platforms, setPlatforms] = useState<PlatformSpec[]>([])
   const [platformTargets, setPlatformTargets] = useState<PlatformSpec[]>([])
   const [platformConnectorConfigs, setPlatformConnectorConfigs] = useState<PlatformConnectorPublicConfig[]>([])
+  const [platformConnectorUsageHistory, setPlatformConnectorUsageHistory] = useState<PlatformConnectorUsageHistory>({ days: 7, generatedAt: '', rows: [], totals: { totalRequests: 0, successCount: 0, failureCount: 0, quotaExhaustedCount: 0, retryableFailureCount: 0 } })
+  const [connectorUsageDays, setConnectorUsageDays] = useState<7 | 30>(7)
   const [connectorErrorFilter, setConnectorErrorFilter] = useState<ConnectorErrorFilter>('all')
   const [statuses, setStatuses] = useState<PlatformStatus[]>([])
   const [keywordPlan, setKeywordPlan] = useState<KeywordPlan>({ seed: '', keywords: [], locales: [] })
@@ -147,10 +149,11 @@ export function App() {
 
   async function refresh() {
     try {
-      const [nextPlatforms, nextPlatformTargets, nextConnectorConfigs, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextAuditLogs, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
+      const [nextPlatforms, nextPlatformTargets, nextConnectorConfigs, nextConnectorHistory, nextStatuses, nextTasks, nextResults, nextComments, nextLeads, nextAuditLogs, nextFollowUps, nextAIProviders, nextAISecretHealth, nextAIStats, nextModelPricing, nextCurrentPricing, nextFailurePolicy, nextFailurePresets, nextRecoveryAdvice] = await Promise.all([
         api.listPlatforms(),
         api.listPlatformExpansionTargets(),
         api.listPlatformConnectorConfigs(),
+        api.listPlatformConnectorUsageHistory({ days: connectorUsageDays }),
         api.checkPlatformStatuses(),
         api.listTasks(),
         api.listSearchResults(),
@@ -170,6 +173,7 @@ export function App() {
       setPlatforms(nextPlatforms)
       setPlatformTargets(nextPlatformTargets)
       setPlatformConnectorConfigs(nextConnectorConfigs)
+      setPlatformConnectorUsageHistory(nextConnectorHistory)
       setPlatformConnectorForm((current) => current.platformKey ? current : {
         ...current,
         platformKey: nextPlatformTargets[0]?.key ?? ''
@@ -201,6 +205,10 @@ export function App() {
       keyword: nextKeyword || undefined
     }
     setAuditLogs(await api.listAuditLogs(filters))
+  }
+
+  async function loadConnectorUsageHistory(days = connectorUsageDays) {
+    setPlatformConnectorUsageHistory(await api.listPlatformConnectorUsageHistory({ days }))
   }
 
   async function planKeyword() {
@@ -1576,6 +1584,60 @@ export function App() {
                 ))}
               </div>
             ) : null}
+            {platformConnectorConfigs.length > 0 ? (
+              <div className="usagePanel">
+                <div className="panelHead compact">
+                  <h3>官方 API 用量趋势</h3>
+                  <span>近 {platformConnectorUsageHistory.days} 天</span>
+                </div>
+                <div className="filterBar compact">
+                  {[7, 30].map((days) => (
+                    <button
+                      className={connectorUsageDays === days ? 'miniButton active' : 'miniButton'}
+                      key={days}
+                      onClick={() => {
+                        const next = days as 7 | 30
+                        setConnectorUsageDays(next)
+                        void loadConnectorUsageHistory(next)
+                      }}
+                    >
+                      {days} 天
+                    </button>
+                  ))}
+                  <span>请求 {platformConnectorUsageHistory.totals.totalRequests}</span>
+                  <span>成功 {platformConnectorUsageHistory.totals.successCount}</span>
+                  <span>失败 {platformConnectorUsageHistory.totals.failureCount}</span>
+                  <span>配额耗尽 {platformConnectorUsageHistory.totals.quotaExhaustedCount}</span>
+                  <span>可重试 {platformConnectorUsageHistory.totals.retryableFailureCount}</span>
+                </div>
+                {platformConnectorUsageHistory.rows.length > 0 ? (
+                  <div className="usageTable">
+                    <div className="usageHeader">
+                      <span>日期</span>
+                      <span>平台</span>
+                      <span>请求</span>
+                      <span>成功</span>
+                      <span>失败</span>
+                      <span>配额</span>
+                      <span>可重试</span>
+                      <span>最近状态</span>
+                    </div>
+                    {platformConnectorUsageHistory.rows.map((row) => (
+                      <div className="usageRow" key={`${row.platformKey}:${row.date}`}>
+                        <span>{row.date}</span>
+                        <span>{platformTargets.find((platform) => platform.key === row.platformKey)?.name ?? row.platformKey}</span>
+                        <span>{row.totalRequests}</span>
+                        <span>{row.successCount}</span>
+                        <span>{row.failureCount}</span>
+                        <span>{row.quotaExhaustedCount}</span>
+                        <span>{row.retryableFailureCount}</span>
+                        <span>{connectorUsageStatusText(row.lastStatus, row.lastErrorCode)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="emptyState">近 {platformConnectorUsageHistory.days} 天暂无官方 API 调用记录</div>}
+              </div>
+            ) : null}
             {visibleConnectorConfigs.length > 0 ? (
               <div className="providerList">
                 {visibleConnectorConfigs.map((config) => (
@@ -1908,6 +1970,12 @@ function connectorErrorCodeLabel(code?: string): string {
   if (code === 'server_error') return '服务异常'
   if (code === 'network_error') return '网络异常'
   return '失败'
+}
+
+function connectorUsageStatusText(status?: 'ok' | 'failed', code?: string): string {
+  if (status === 'ok') return '成功'
+  if (status === 'failed') return connectorErrorCodeLabel(code)
+  return '无'
 }
 
 function auditActionLabel(action: string): string {

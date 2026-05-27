@@ -1,9 +1,10 @@
-import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, AuditLogFilters, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportPreview, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ManualImportInput, ManualImportPreview, ManualImportResult, ModelPricingView, PlatformConnectorConfig, PlatformConnectorPublicConfig, PlatformLoginResult, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, PrivacyCleanupResult, SearchResult, Task } from '../../../../../packages/core/src/index'
+import type { AIAnalysisStats, AIFailurePolicy, AIFailurePolicyPreset, AIProviderConfig, AIProviderPublicConfig, AIRecoveryAdvice, AISecretBackup, AISecretHealth, AuditEvent, AuditLogFilters, CalendarExportResult, CommentRecord, FollowUpReminder, FollowUpReminderOptions, KeywordPlan, LeadDetail, LeadExportOptions, LeadExportPreview, LeadExportResult, LeadFilters, LeadRecord, LeadUpdateInput, ManualImportInput, ManualImportPreview, ManualImportResult, ModelPricingView, PlatformConnectorConfig, PlatformConnectorPublicConfig, PlatformConnectorUsageHistory, PlatformLoginResult, PlatformSpec, PlatformStatus, PrivacyCleanupEstimate, PrivacyCleanupOptions, PrivacyCleanupResult, SearchResult, Task } from '../../../../../packages/core/src/index'
 
 export interface LeadMinerApi {
   listPlatforms(): Promise<PlatformSpec[]>
   listPlatformExpansionTargets(): Promise<PlatformSpec[]>
   listPlatformConnectorConfigs(): Promise<PlatformConnectorPublicConfig[]>
+  listPlatformConnectorUsageHistory(input?: { days?: number } | number): Promise<PlatformConnectorUsageHistory>
   savePlatformConnectorConfig(input: Omit<PlatformConnectorConfig, 'updatedAt'>): Promise<PlatformConnectorPublicConfig>
   checkPlatformStatuses(): Promise<PlatformStatus[]>
   loginPlatform(platformKey: string): Promise<PlatformLoginResult>
@@ -57,7 +58,7 @@ declare global {
 
 export const fallbackApi: LeadMinerApi = {
   async getAppVersion() {
-    return '0.1.2'
+    return '0.1.3'
   },
   async listPlatforms() {
     return [
@@ -103,6 +104,15 @@ export const fallbackApi: LeadMinerApi = {
   },
   async listPlatformConnectorConfigs() {
     return []
+  },
+  async listPlatformConnectorUsageHistory(input) {
+    const days = typeof input === 'number' ? input : input?.days ?? 7
+    return {
+      days,
+      generatedAt: new Date().toISOString(),
+      rows: [],
+      totals: { totalRequests: 0, successCount: 0, failureCount: 0, quotaExhaustedCount: 0, retryableFailureCount: 0 }
+    }
   },
   async savePlatformConnectorConfig(input) {
     return {

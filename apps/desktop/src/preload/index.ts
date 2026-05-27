@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('leadMiner', {
   listPlatforms: () => ipcRenderer.invoke('platform:list'),
   listPlatformExpansionTargets: () => ipcRenderer.invoke('platform:targets'),
   listPlatformConnectorConfigs: () => ipcRenderer.invoke('platform:listConnectorConfigs'),
+  listPlatformConnectorUsageHistory: (input?: unknown) => ipcRenderer.invoke('platform:connectorUsageHistory', input),
   savePlatformConnectorConfig: (input: unknown) => ipcRenderer.invoke('platform:saveConnectorConfig', input),
   checkPlatformStatuses: () => ipcRenderer.invoke('platform:status'),
   loginPlatform: (platformKey: string) => ipcRenderer.invoke('platform:login', platformKey),

@@ -137,6 +137,7 @@ function isSafeExternalUrl(rawUrl: string): boolean {
 handleTrusted('platform:list', () => core.platforms.list())
 handleTrusted('platform:targets', () => platformExpansionTargetSpecs)
 handleTrusted('platform:listConnectorConfigs', () => core.listPlatformConnectorConfigs())
+handleTrusted('platform:connectorUsageHistory', (_event, input) => core.listPlatformConnectorUsageHistory(assertUsageHistoryDays(input)))
 handleTrusted('platform:saveConnectorConfig', (_event, input) => core.savePlatformConnectorConfig(assertPlatformConnectorInput(input)))
 handleTrusted('platform:status', () => core.checkPlatformStatuses())
 handleTrusted('platform:login', (_event, platformKey) => core.loginPlatform(assertString(platformKey, '平台 key', 1, 80)))
@@ -413,6 +414,13 @@ function assertPlatformConnectorInput(input: unknown): { platformKey: string; en
     minDelayMs: value.minDelayMs === undefined ? undefined : clampInteger(value.minDelayMs, '平台请求间隔', 0, 86_400_000),
     importTemplate
   }
+}
+
+function assertUsageHistoryDays(input: unknown): number {
+  if (input === undefined) return 7
+  if (typeof input === 'number') return clampInteger(input, '用量历史天数', 1, 30)
+  const value = assertObject(input, '用量历史筛选')
+  return value.days === undefined ? 7 : clampInteger(value.days, '用量历史天数', 1, 30)
 }
 
 function assertManualImportTemplate(input: unknown): { fields: string[]; requiredFields?: string[]; sample?: string } {

@@ -374,6 +374,35 @@ export interface PlatformConnectorPublicConfig {
   updatedAt: string
 }
 
+export interface PlatformConnectorUsageDay {
+  platformKey: string
+  date: string
+  totalRequests: number
+  successCount: number
+  failureCount: number
+  quotaExhaustedCount: number
+  retryableFailureCount: number
+  lastStatus?: 'ok' | 'failed'
+  lastError?: string
+  lastErrorCode?: string
+  lastRetryable?: boolean
+  quotaResetAt?: string
+  lastRequestAt?: string
+}
+
+export interface PlatformConnectorUsageHistory {
+  days: number
+  generatedAt: string
+  rows: PlatformConnectorUsageDay[]
+  totals: {
+    totalRequests: number
+    successCount: number
+    failureCount: number
+    quotaExhaustedCount: number
+    retryableFailureCount: number
+  }
+}
+
 export interface PrivacyCleanupOptions {
   platformProfiles?: boolean
   platformKeys?: string[]

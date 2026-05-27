@@ -453,6 +453,37 @@ test('official api connector usage records structured failure guidance', async (
   repository.close()
 })
 
+test('official api usage history aggregates daily totals without exposing secrets', () => {
+  const repository = new LeadMinerRepository(':memory:')
+  repository.savePlatformConnectorConfig({
+    platformKey: 'history_api',
+    enabled: true,
+    apiKey: 'history-secret-value',
+    quotaPerDay: 10,
+    updatedAt: new Date('2026-05-27T00:00:00.000Z').toISOString()
+  })
+
+  repository.recordPlatformConnectorUsage('history_api', 'ok', undefined, new Date('2026-05-26T10:00:00.000Z'))
+  repository.recordPlatformConnectorUsage('history_api', 'failed', 'Quota hit for project', new Date('2026-05-26T11:00:00.000Z'), { errorCode: 'quota_exhausted', retryable: false, quotaResetAt: '2026-05-27T00:00:00.000Z' })
+  repository.recordPlatformConnectorUsage('history_api', 'failed', 'Temporary outage', new Date('2026-05-27T09:00:00.000Z'), { errorCode: 'server_error', retryable: true })
+
+  const history = repository.listPlatformConnectorUsageHistory(7, new Date('2026-05-27T12:00:00.000Z'))
+
+  assert.equal(history.days, 7)
+  assert.equal(history.rows.length, 2)
+  assert.deepEqual(history.totals, {
+    totalRequests: 3,
+    successCount: 1,
+    failureCount: 2,
+    quotaExhaustedCount: 1,
+    retryableFailureCount: 1
+  })
+  assert.equal(history.rows.find((row) => row.date === '2026-05-26')?.quotaExhaustedCount, 1)
+  assert.equal(history.rows.find((row) => row.date === '2026-05-27')?.retryableFailureCount, 1)
+  assert.equal(JSON.stringify(history).includes('history-secret-value'), false)
+  repository.close()
+})
+
 test('manual import parser accepts comment CSV aliases and quoted commas', () => {
   const comments = parseCommentCsv([
     '昵称,评论,点赞数,发布时间,链接',

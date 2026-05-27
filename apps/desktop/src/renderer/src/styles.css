@@ -1024,6 +1024,53 @@ button:focus-visible {
   gap: 8px;
 }
 
+.usagePanel {
+  margin-bottom: 12px;
+}
+
+.filterBar.compact {
+  margin-bottom: 8px;
+}
+
+.filterBar.compact span {
+  padding: 7px 10px;
+  border: 1px solid #d7e2f0;
+  border-radius: 7px;
+  background: #f8fbff;
+  color: #475569;
+  font-size: 12px;
+}
+
+.usageTable {
+  display: grid;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.usageHeader,
+.usageRow {
+  display: grid;
+  grid-template-columns: 92px minmax(160px, 1.4fr) repeat(5, minmax(64px, 0.7fr)) minmax(96px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 850px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.usageHeader {
+  background: #eef4fb;
+  color: #475569;
+  font-weight: 700;
+}
+
+.usageRow {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #334155;
+}
+
 .auditRow {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) 140px 180px;

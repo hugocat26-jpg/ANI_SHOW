@@ -17,6 +17,8 @@ import type {
   LeadUpdateInput,
   PlatformConnectorConfig,
   PlatformConnectorPublicConfig,
+  PlatformConnectorUsageDay,
+  PlatformConnectorUsageHistory,
   PlatformProtection,
   PlatformStatus,
   SearchResult,
@@ -53,6 +55,10 @@ interface StoredPlatformConnectorUsage {
   platformKey: string
   date: string
   usedToday: number
+  successCount?: number
+  failureCount?: number
+  quotaExhaustedCount?: number
+  retryableFailureCount?: number
   lastStatus: 'ok' | 'failed'
   lastError?: string
   lastErrorCode?: string
@@ -778,6 +784,38 @@ export class LeadMinerRepository {
     return this.readStoredPlatformConnectorConfigs().map((config) => this.mapPlatformConnectorConfig(config))
   }
 
+  listPlatformConnectorUsageHistory(days = 7, now = new Date()): PlatformConnectorUsageHistory {
+    const safeDays = Math.max(1, Math.min(30, Math.floor(days)))
+    const end = dateOnly(now)
+    const start = dateOnly(addUtcDays(now, -(safeDays - 1)))
+    const rows = this.readStoredPlatformConnectorUsage()
+      .filter((usage) => usage.date >= start && usage.date <= end)
+      .sort((a, b) => b.date.localeCompare(a.date) || a.platformKey.localeCompare(b.platformKey))
+      .map((usage): PlatformConnectorUsageDay => ({
+        platformKey: usage.platformKey,
+        date: usage.date,
+        totalRequests: usage.usedToday,
+        successCount: usage.successCount ?? (usage.lastStatus === 'ok' ? usage.usedToday : 0),
+        failureCount: usage.failureCount ?? (usage.lastStatus === 'failed' ? usage.usedToday : 0),
+        quotaExhaustedCount: usage.quotaExhaustedCount ?? (usage.lastErrorCode === 'quota_exhausted' ? 1 : 0),
+        retryableFailureCount: usage.retryableFailureCount ?? (usage.lastRetryable ? 1 : 0),
+        lastStatus: usage.lastStatus,
+        lastError: usage.lastError,
+        lastErrorCode: usage.lastErrorCode,
+        lastRetryable: usage.lastRetryable,
+        quotaResetAt: usage.quotaResetAt,
+        lastRequestAt: usage.lastRequestAt
+      }))
+    const totals = rows.reduce((sum, row) => ({
+      totalRequests: sum.totalRequests + row.totalRequests,
+      successCount: sum.successCount + row.successCount,
+      failureCount: sum.failureCount + row.failureCount,
+      quotaExhaustedCount: sum.quotaExhaustedCount + row.quotaExhaustedCount,
+      retryableFailureCount: sum.retryableFailureCount + row.retryableFailureCount
+    }), { totalRequests: 0, successCount: 0, failureCount: 0, quotaExhaustedCount: 0, retryableFailureCount: 0 })
+    return { days: safeDays, generatedAt: now.toISOString(), rows, totals }
+  }
+
   recordPlatformConnectorUsage(platformKey: string, status: 'ok' | 'failed', message?: string, now = new Date(), details: { errorCode?: string; retryable?: boolean; quotaResetAt?: string } = {}): PlatformConnectorPublicConfig | null {
     const configs = this.readStoredPlatformConnectorConfigs()
     const config = configs.find((item) => item.platformKey === platformKey)
@@ -785,10 +823,18 @@ export class LeadMinerRepository {
     const date = now.toISOString().slice(0, 10)
     const usages = this.readStoredPlatformConnectorUsage()
     const existing = usages.find((item) => item.platformKey === platformKey && item.date === date)
+    const successCount = (existing?.successCount ?? (existing?.lastStatus === 'ok' ? existing.usedToday : 0)) + (status === 'ok' ? 1 : 0)
+    const failureCount = (existing?.failureCount ?? (existing?.lastStatus === 'failed' ? existing.usedToday : 0)) + (status === 'failed' ? 1 : 0)
+    const quotaExhaustedCount = (existing?.quotaExhaustedCount ?? 0) + (details.errorCode === 'quota_exhausted' ? 1 : 0)
+    const retryableFailureCount = (existing?.retryableFailureCount ?? 0) + (status === 'failed' && details.retryable ? 1 : 0)
     const next: StoredPlatformConnectorUsage = {
       platformKey,
       date,
       usedToday: (existing?.usedToday ?? 0) + 1,
+      successCount,
+      failureCount,
+      quotaExhaustedCount,
+      retryableFailureCount,
       lastStatus: status,
       lastError: status === 'failed' ? message?.slice(0, 500) : undefined,
       lastErrorCode: status === 'failed' ? details.errorCode?.slice(0, 80) : undefined,
@@ -799,7 +845,7 @@ export class LeadMinerRepository {
     const merged = [
       ...usages.filter((item) => !(item.platformKey === platformKey && item.date === date)),
       next
-    ].filter((item) => item.date >= date || item.platformKey !== platformKey)
+    ].filter((item) => item.date >= dateOnly(addUtcDays(now, -89)))
       .sort((a, b) => `${a.platformKey}:${a.date}`.localeCompare(`${b.platformKey}:${b.date}`))
     this.db.prepare(`
       INSERT INTO app_settings (key, value, updated_at)
@@ -1007,6 +1053,10 @@ export class LeadMinerRepository {
         platformKey: String(item.platformKey ?? ''),
         date: typeof item.date === 'string' ? item.date : '',
         usedToday: normalizeOptionalInteger(item.usedToday, 0, 1_000_000) ?? 0,
+        successCount: normalizeOptionalInteger(item.successCount, 0, 1_000_000),
+        failureCount: normalizeOptionalInteger(item.failureCount, 0, 1_000_000),
+        quotaExhaustedCount: normalizeOptionalInteger(item.quotaExhaustedCount, 0, 1_000_000),
+        retryableFailureCount: normalizeOptionalInteger(item.retryableFailureCount, 0, 1_000_000),
         lastStatus: item.lastStatus === 'failed' ? 'failed' as const : 'ok' as const,
         lastError: typeof item.lastError === 'string' ? item.lastError.slice(0, 500) : undefined,
         lastErrorCode: typeof item.lastErrorCode === 'string' ? item.lastErrorCode.slice(0, 80) : undefined,
@@ -1205,6 +1255,16 @@ function normalizeOptionalInteger(value: unknown, minimum: number, maximum: numb
   const parsed = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(parsed)) return undefined
   return Math.min(maximum, Math.max(minimum, Math.floor(parsed)))
+}
+
+function dateOnly(value: Date): string {
+  return value.toISOString().slice(0, 10)
+}
+
+function addUtcDays(value: Date, days: number): Date {
+  const next = new Date(value)
+  next.setUTCDate(next.getUTCDate() + days)
+  return next
 }
 
 function escapeSqlLike(value: string): string {

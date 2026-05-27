@@ -55,6 +55,8 @@ Codex Security 要求：
 - 设置页展示历史摘要和失败筛选。
 - 新增 `official api usage history` 相关回归测试。
 
+状态：已完成。
+
 ## P2：工作台前端性能和信息架构
 
 目标：
